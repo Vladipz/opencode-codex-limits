@@ -4,12 +4,46 @@ import legacy, {
   formatExpiry,
   getLocale,
   getValidToken,
-  loadCodexLimits,
   loadResetCredits,
   loadUsage,
   messages,
+  type Locale,
   type ResetCredit,
 } from "./tui-v1.ts";
+
+type UsageWindow = {
+  used_percent?: number;
+  limit_window_seconds?: number;
+  reset_at?: number;
+};
+
+function usageReport(data: any, locale: Locale): string {
+  const text = messages[locale];
+  if (!data.rate_limit) throw new Error(text.missingRateLimit);
+  const windows: UsageWindow[] = [data.rate_limit.primary_window, data.rate_limit.secondary_window].filter(Boolean);
+  if (!windows.length) throw new Error(text.missingWindows);
+
+  const label = (seconds?: number) => {
+    if (seconds === 18000) return text.fiveHourWindow;
+    if (seconds === 604800) return text.weeklyWindow;
+    if (!seconds) return "Limit";
+    const hours = seconds / 3600;
+    return hours < 24 ? `${hours}h` : `${Math.round(hours / 24)}d`;
+  };
+  const resetTime = (timestamp?: number) => timestamp
+    ? new Date(timestamp * 1000).toLocaleString(locale === "uk" ? "uk-UA" : "en-US", {
+        day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit",
+      })
+    : text.unknownReset;
+
+  const lines = windows.map((window) => [
+    `${label(window.limit_window_seconds)}: ${window.used_percent ?? "?"}% ${text.used}`,
+    `${locale === "uk" ? "Оновиться" : "Resets"}: ${resetTime(window.reset_at)}`,
+  ].join("\n"));
+  const count = data.rate_limit_reset_credits?.available_count;
+  if (typeof count === "number") lines.push(text.availableResets(count));
+  return lines.join("\n\n");
+}
 
 const v2 = Plugin.define({
   id: "local.codex-limits.cli",
@@ -41,8 +75,8 @@ const v2 = Plugin.define({
           slash: { name: "codex-limits" },
           run: async () => {
             try {
-              toast({ message: text.loading, variant: "info" });
-              toast({ title: text.usageTitle, message: await loadCodexLimits(locale), variant: "success", duration: 8000 });
+              const data = await loadUsage(locale);
+              await context.ui.dialog.alert({ title: text.usageTitle, message: usageReport(data, locale) });
             } catch (error) { showError(error); }
           },
         },
@@ -55,16 +89,14 @@ const v2 = Plugin.define({
           slash: { name: "codex-resets" },
           run: async () => {
             try {
-              toast({ message: text.loadingResets, variant: "info" });
               const data = await loadResetCredits(locale);
               const credits = availableCredits(data.credits);
-              toast({
+              await context.ui.dialog.alert({
+                title: text.resetsCommandTitle,
                 message: credits.length
-                  ? `${text.availableResets(data.available_count)} | ${credits.map((credit) =>
-                      `${credit.title || "Full reset"} · ${formatExpiry(credit.expires_at, locale)}`).join(" | ")}`
+                  ? [text.availableResets(data.available_count), ...credits.map((credit) =>
+                      `${credit.title || "Full reset"}\n${locale === "uk" ? "Діє до" : "Expires"}: ${formatExpiry(credit.expires_at, locale)}`)].join("\n\n")
                   : text.noResets,
-                variant: "info",
-                duration: 12000,
               });
             } catch (error) { showError(error); }
           },
