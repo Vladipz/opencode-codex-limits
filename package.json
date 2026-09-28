@@ -4,6 +4,9 @@
   "description": "OpenCode TUI plugin for displaying Codex usage limits",
   "type": "module",
   "license": "MIT",
+  "scripts": {
+    "test": "node --test src/tui.test.mjs"
+  },
   "exports": {
     "./tui": "./src/tui.ts"
   },
