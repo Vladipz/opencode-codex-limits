@@ -26,7 +26,10 @@ const v2 = Plugin.define({
     const availableCredits = (credits: ResetCredit[]) =>
       credits.filter((credit) => credit.status === "available" && credit.reset_type === "codex_rate_limits");
 
-    context.keymap.layer(() => ({
+    context.ui.slot({
+      append: "app",
+      render: () => {
+        context.keymap.layer(() => ({
       mode: "global",
       commands: [
         {
@@ -111,7 +114,10 @@ const v2 = Plugin.define({
           },
         },
       ],
-    }));
+        }));
+        return null;
+      },
+    });
   },
 });
 

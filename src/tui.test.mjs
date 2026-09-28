@@ -53,6 +53,7 @@ function setupV2Ui(selection = "credit-2", confirmed = true) {
   plugin.setup({
     keymap: { layer: (register) => { layer = register(); } },
     ui: {
+      slot: ({ render }) => render(),
       toast: { show: (toast) => toasts.push(toast) },
       dialog: {
         select: async (input) => { dialogs.push(input); return selection; },
