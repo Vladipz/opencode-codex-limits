@@ -6,6 +6,7 @@ A small OpenCode TUI plugin that displays your current Codex usage limits.
 
 - Shows Codex usage limits
 - Shows reset time
+- Automatically uses Ukrainian when the system locale is Ukrainian; otherwise English
 - Hotkey: `Alt+L`
 - Command: `/codex-limits`
 
@@ -14,20 +15,18 @@ A small OpenCode TUI plugin that displays your current Codex usage limits.
 Install directly from GitHub:
 
 ```bash
-opencode plugin add github:Vladipz/opencode-codex-limits
+opencode plugin github:Vladipz/opencode-codex-limits
 ```
 
 Then restart OpenCode.
 
 ## Usage
 
-Press `Alt+L` or run `/codex-limits`.
+Press `Alt+L` or run `/codex-limits`. The plugin automatically selects Ukrainian (`uk-*`) or English based on the system locale.
 
 ## Uninstall
 
-```bash
-opencode plugin remove github:Vladipz/opencode-codex-limits
-```
+To uninstall, remove `github:Vladipz/opencode-codex-limits` from the `plugin` array in `.opencode/tui.json` (project install) or your global `tui.json` (global install).
 
 ## Disclaimer
 

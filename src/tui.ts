@@ -4,6 +4,61 @@ import path from "node:path";
 
 const OPENAI_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
 
+type Locale = "en" | "uk";
+
+const messages = {
+  en: {
+    missingAuth: "Could not find OpenCode/Codex auth.json.",
+    missingAccessToken: (authPath: string) => `Access token not found in ${authPath}.`,
+    tokenRefreshFailed: (status: number, body: string) =>
+      `Token refresh failed (${status}): ${body}`,
+    usageRequestFailed: (status: number, body: string) =>
+      `Usage API request failed (${status}): ${body}`,
+    missingRateLimit: "The API response did not contain rate_limit.",
+    missingWindows: "The API response did not contain usage limit windows.",
+    unknownReset: "unknown",
+    used: "used",
+    resets: "resets",
+    commandTitle: "Check Codex Limits",
+    commandDescription: "Show current Codex usage limits",
+    loading: "Fetching Codex usage limits...",
+    error: (message: string) => `Codex limits error: ${message}`,
+  },
+  uk: {
+    missingAuth: "Не знайдено auth.json OpenCode/Codex.",
+    missingAccessToken: (authPath: string) => `Не знайдено токен доступу у ${authPath}.`,
+    tokenRefreshFailed: (status: number, body: string) =>
+      `Не вдалося оновити токен (${status}): ${body}`,
+    usageRequestFailed: (status: number, body: string) =>
+      `Помилка запиту до API лімітів (${status}): ${body}`,
+    missingRateLimit: "У відповіді API немає rate_limit.",
+    missingWindows: "У відповіді API немає вікон лімітів використання.",
+    unknownReset: "невідомо",
+    used: "використано",
+    resets: "скидання",
+    commandTitle: "Перевірити ліміти Codex",
+    commandDescription: "Показати поточні ліміти використання Codex",
+    loading: "Отримання лімітів Codex...",
+    error: (message: string) => `Помилка лімітів Codex: ${message}`,
+  },
+} satisfies Record<Locale, Record<string, unknown>>;
+
+function getLocale(): Locale {
+  try {
+    const locale = Intl.DateTimeFormat().resolvedOptions().locale;
+    if (/^uk(?:[-_]|$)/i.test(locale)) {
+      return "uk";
+    }
+  } catch {
+    // Fall through to the environment locale when Intl cannot resolve it.
+  }
+
+  const environmentLocale =
+    process.env.LC_ALL ?? process.env.LC_MESSAGES ?? process.env.LANG ?? "";
+
+  return /^uk(?:[-_]|$)/i.test(environmentLocale) ? "uk" : "en";
+}
+
 function getAuthFilePath(): string {
   const home = os.homedir();
 
@@ -25,11 +80,12 @@ function getAuthFilePath(): string {
   );
 }
 
-async function getValidToken(): Promise<string> {
+async function getValidToken(locale: Locale): Promise<string> {
+  const text = messages[locale];
   const authPath = getAuthFilePath();
 
   if (!authPath) {
-    throw new Error("Не знайдено auth.json OpenCode/Codex");
+    throw new Error(text.missingAuth);
   }
 
   const authText = fs.readFileSync(authPath, "utf-8");
@@ -40,7 +96,7 @@ async function getValidToken(): Promise<string> {
   let token = openai.access ?? openai.access_token;
 
   if (!token) {
-    throw new Error(`Access token не знайдено в ${authPath}`);
+    throw new Error(text.missingAccessToken(authPath));
   }
 
   const expires = openai.expires;
@@ -68,7 +124,7 @@ async function getValidToken(): Promise<string> {
     if (!response.ok) {
       const body = await response.text();
 
-      throw new Error(`Refresh token error: ${response.status} ${body}`);
+      throw new Error(text.tokenRefreshFailed(response.status, body));
     }
 
     const data: any = await response.json();
@@ -89,8 +145,9 @@ async function getValidToken(): Promise<string> {
   return token;
 }
 
-async function loadCodexLimits(): Promise<string> {
-  const token = await getValidToken();
+async function loadCodexLimits(locale: Locale): Promise<string> {
+  const text = messages[locale];
+  const token = await getValidToken(locale);
 
   const response = await fetch("https://chatgpt.com/backend-api/wham/usage", {
     method: "GET",
@@ -104,7 +161,7 @@ async function loadCodexLimits(): Promise<string> {
   if (!response.ok) {
     const body = await response.text();
 
-    throw new Error(`Usage API ${response.status}: ${body}`);
+    throw new Error(text.usageRequestFailed(response.status, body));
   }
 
   const data: any = await response.json();
@@ -114,7 +171,7 @@ async function loadCodexLimits(): Promise<string> {
   const rateLimit = data.rate_limit;
 
   if (!rateLimit) {
-    throw new Error("API не повернув rate_limit");
+    throw new Error(text.missingRateLimit);
   }
 
   const windows = [rateLimit.primary_window, rateLimit.secondary_window].filter(
@@ -122,20 +179,23 @@ async function loadCodexLimits(): Promise<string> {
   );
 
   if (windows.length === 0) {
-    throw new Error("API не повернув вікна лімітів");
+    throw new Error(text.missingWindows);
   }
 
   const formatReset = (resetAt?: number) => {
     if (!resetAt) {
-      return "невідомо";
+      return text.unknownReset;
     }
 
-    return new Date(resetAt * 1000).toLocaleString([], {
-      day: "2-digit",
-      month: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
-    });
+    return new Date(resetAt * 1000).toLocaleString(
+      locale === "uk" ? "uk-UA" : "en-US",
+      {
+        day: "2-digit",
+        month: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+      },
+    );
   };
 
   const formatWindow = (window: any) => {
@@ -160,9 +220,7 @@ async function loadCodexLimits(): Promise<string> {
       }
     }
 
-    return `${name}: ${used} використано, reset ${formatReset(
-      window.reset_at,
-    )}`;
+    return `${name}: ${used} ${text.used}, ${text.resets} ${formatReset(window.reset_at)}`;
   };
 
   return windows.map(formatWindow).join(" | ");
@@ -172,6 +230,9 @@ const plugin = {
   id: "local.codex-limits",
 
   async tui(api: any) {
+    const locale = getLocale();
+    const text = messages[locale];
+
     const dispose = api.keymap.registerLayer({
       commands: [
         {
@@ -179,9 +240,9 @@ const plugin = {
 
           name: "codex-limits",
 
-          title: "Check Codex Limits",
+          title: text.commandTitle,
 
-          description: "Show current Codex usage limits",
+          desc: text.commandDescription,
 
           category: "Codex",
 
@@ -190,12 +251,12 @@ const plugin = {
           run: async () => {
             try {
               api.ui.toast({
-                message: "Отримання лімітів Codex...",
+                message: text.loading,
 
                 variant: "info",
               });
 
-              const message = await loadCodexLimits();
+              const message = await loadCodexLimits(locale);
 
               api.ui.toast({
                 message,
@@ -211,7 +272,7 @@ const plugin = {
               console.error("[codex-limits]", error);
 
               api.ui.toast({
-                message: `Codex limits error: ${message}`,
+                message: text.error(message),
 
                 variant: "error",
 
@@ -225,7 +286,7 @@ const plugin = {
       bindings: [
         {
           key: "alt+l",
-          command: "palette.codex-limits",
+          cmd: "palette.codex-limits",
         },
       ],
     });
