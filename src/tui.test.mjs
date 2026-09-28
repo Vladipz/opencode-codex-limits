@@ -102,15 +102,18 @@ test("V2 registers all commands and confirms a selected reset before consuming i
   }
   await ui.command("codex-limits").run();
   assert.equal(ui.toasts[0].message, "Fetching Codex usage limits...");
-  assert.equal(ui.dialogs[0].title, "Codex usage");
-  assert.match(ui.dialogs[0].message, /^5 hours: 95% used\nResets: .+\n\n7 days: 6% used\nResets: .+\n\n2 resets available$/);
+  assert.equal(ui.toasts[0].duration, 30000);
+  assert.equal(ui.toasts[1].title, "Codex usage");
+  assert.match(ui.toasts[1].message, /^5 hours: 95% used\nResets: .+\n\n7 days: 6% used\nResets: .+\n\n2 resets available$/);
+  assert.equal(ui.dialogs.length, 0);
   await ui.command("codex-resets").run();
-  assert.equal(ui.toasts[1].message, "Fetching Codex resets...");
-  assert.equal(ui.dialogs[1].title, "List Codex resets");
-  assert.match(ui.dialogs[1].message, /^2 resets available\n\nFirst reset\nExpires: .+\n\nSecond reset\nExpires: .+$/);
+  assert.equal(ui.toasts[2].message, "Fetching Codex resets...");
+  assert.equal(ui.toasts[2].duration, 30000);
+  assert.equal(ui.dialogs[0].title, "List Codex resets");
+  assert.match(ui.dialogs[0].message, /^2 resets available\n\nFirst reset\nExpires: .+\n\nSecond reset\nExpires: .+$/);
   await ui.command("codex-reset").run();
-  assert.equal(ui.dialogs[2].options[1].value, "credit-2");
-  assert.match(ui.dialogs[3].message, /Second reset/);
+  assert.equal(ui.dialogs[1].options[1].value, "credit-2");
+  assert.match(ui.dialogs[2].message, /Second reset/);
   assert.equal(JSON.parse(calls.find((call) => call.url.endsWith("/consume")).init.body).credit_id, "credit-2");
   assert.match(ui.toasts.at(-1).message, /usage limits were reset/);
 });
@@ -133,15 +136,16 @@ test("V2 shows loading feedback before usage and reset requests finish", async (
     rate_limit: { primary_window: { used_percent: 24, limit_window_seconds: 18000 } },
   }));
   await usage;
-  assert.equal(ui.dialogs.length, 1);
+  assert.equal(ui.dialogs.length, 0);
+  assert.equal(ui.toasts.at(-1).title, "Codex usage");
 
   const resets = ui.command("codex-resets").run();
   assert.equal(ui.toasts.at(-1).message, "Fetching Codex resets...");
-  assert.equal(ui.dialogs.length, 1);
+  assert.equal(ui.dialogs.length, 0);
   await new Promise((resolve) => setImmediate(resolve));
   resolveResets(Response.json({ available_count: 0, credits: [] }));
   await resets;
-  assert.equal(ui.dialogs.length, 2);
+  assert.equal(ui.dialogs.length, 1);
 });
 
 test("V2 does not consume a reset when confirmation is cancelled", async () => {
