@@ -22,7 +22,7 @@ Then restart OpenCode.
 
 ## Usage
 
-Run `/codex-limits` for the usage windows and available reset count. Run `/codex-resets` to see each available reset and its expiration. Run `/codex-reset` to choose a reset and confirm its use. The reset command only offers redemption when OpenAI reports that a usage window is eligible.
+Run `/codex-limits` for the usage windows and available reset count, shown on separate lines. Run `/codex-resets` to see each available reset and its expiration. Run `/codex-reset` to choose a reset and confirm its use. The reset command only offers redemption when OpenAI reports that a usage window is eligible.
 
 The plugin reads the local OpenCode or Codex authentication session. If both exist for the same account and the OpenCode token has expired, it can use the current Codex token. The plugin automatically selects Ukrainian (`uk-*`) or English based on the system locale.
 

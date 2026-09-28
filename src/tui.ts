@@ -28,6 +28,9 @@ const messages = {
     missingRateLimit: "The API response did not contain rate_limit.",
     missingWindows: "The API response did not contain usage limit windows.",
     availableResets: (count: number) => `${count} reset${count === 1 ? "" : "s"} available`,
+    fiveHourWindow: "5 hours",
+    weeklyWindow: "7 days",
+    usageTitle: "Codex usage",
     noResets: "No banked resets are available.",
     notApplicable: "No usage window is eligible for a reset yet.",
     resetListTitle: "Choose a Codex reset",
@@ -64,6 +67,9 @@ const messages = {
     missingRateLimit: "У відповіді API немає rate_limit.",
     missingWindows: "У відповіді API немає вікон лімітів використання.",
     availableResets: (count: number) => `Доступно скидань: ${count}`,
+    fiveHourWindow: "5 годин",
+    weeklyWindow: "7 днів",
+    usageTitle: "Використання Codex",
     noResets: "Немає доступних збережених скидань.",
     notApplicable: "Зараз немає ліміту, який можна скинути.",
     resetListTitle: "Оберіть скидання Codex",
@@ -334,9 +340,9 @@ async function loadCodexLimits(locale: Locale): Promise<string> {
     let name = "Limit";
 
     if (seconds === 18000) {
-      name = "5h";
+      name = text.fiveHourWindow;
     } else if (seconds === 604800) {
-      name = "7d";
+      name = text.weeklyWindow;
     } else if (seconds) {
       const hours = seconds / 3600;
 
@@ -352,9 +358,9 @@ async function loadCodexLimits(locale: Locale): Promise<string> {
 
   const count = data.rate_limit_reset_credits?.available_count;
   return [
-    windows.map(formatWindow).join(" | "),
+    ...windows.map(formatWindow),
     typeof count === "number" ? text.availableResets(count) : null,
-  ].filter(Boolean).join(" | ");
+  ].filter(Boolean).join("\n");
 }
 
 const plugin = {
@@ -401,6 +407,7 @@ const plugin = {
               const message = await loadCodexLimits(locale);
 
               api.ui.toast({
+                title: text.usageTitle,
                 message,
 
                 variant: "success",

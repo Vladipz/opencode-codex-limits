@@ -67,6 +67,7 @@ test("shows the reset count and consumes only the selected credit after confirma
   await plugin.tui(ui.api);
   await ui.command("codex-limits").run();
   assert.match(ui.toasts.at(-1).message, /2 resets available/);
+  assert.match(ui.toasts.at(-1).message, /^5 hours:.*\n2 resets available$/m);
 
   await ui.command("codex-resets").run();
   assert.match(ui.toasts.at(-1).message, /First reset/);
