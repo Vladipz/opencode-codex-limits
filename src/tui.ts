@@ -282,13 +282,6 @@ const plugin = {
           },
         },
       ],
-
-      bindings: [
-        {
-          key: "alt+l",
-          cmd: "palette.codex-limits",
-        },
-      ],
     });
 
     api.lifecycle?.onDispose?.(() => {

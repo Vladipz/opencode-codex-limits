@@ -7,7 +7,6 @@ A small OpenCode TUI plugin that displays your current Codex usage limits.
 - Shows Codex usage limits
 - Shows reset time
 - Automatically uses Ukrainian when the system locale is Ukrainian; otherwise English
-- Hotkey: `Alt+L`
 - Command: `/codex-limits`
 
 ## Installation
@@ -22,7 +21,7 @@ Then restart OpenCode.
 
 ## Usage
 
-Press `Alt+L` or run `/codex-limits`. The plugin automatically selects Ukrainian (`uk-*`) or English based on the system locale.
+Run `/codex-limits`. The plugin automatically selects Ukrainian (`uk-*`) or English based on the system locale.
 
 ## Uninstall
 
