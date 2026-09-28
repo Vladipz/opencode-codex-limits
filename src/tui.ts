@@ -1,437 +1,64 @@
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
-import { randomUUID } from "node:crypto";
+import { Plugin } from "@opencode/plugin/tui";
+import legacy, {
+  consumeResetCredit,
+  formatExpiry,
+  getLocale,
+  getValidToken,
+  loadCodexLimits,
+  loadResetCredits,
+  loadUsage,
+  messages,
+  type ResetCredit,
+} from "./tui-v1.ts";
 
-const OPENAI_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
-const API_BASE = "https://chatgpt.com/backend-api/wham";
-
-type ResetCredit = {
-  id: string;
-  reset_type: string;
-  status: string;
-  expires_at?: string | null;
-  title?: string | null;
-};
-
-let pendingRedemption: { creditId: string; requestId: string } | undefined;
-
-type Locale = "en" | "uk";
-
-const messages = {
-  en: {
-    missingAuth: "Could not find OpenCode/Codex auth.json.",
-    missingAccessToken: (authPath: string) => `Access token not found in ${authPath}.`,
-    tokenRefreshFailed: (status: number, body: string) =>
-      `Token refresh failed (${status}): ${body}`,
-    usageRequestFailed: (status: number) => `Usage API request failed (${status}).`,
-    missingRateLimit: "The API response did not contain rate_limit.",
-    missingWindows: "The API response did not contain usage limit windows.",
-    availableResets: (count: number) => `${count} reset${count === 1 ? "" : "s"} available`,
-    fiveHourWindow: "5 hours",
-    weeklyWindow: "7 days",
-    usageTitle: "Codex usage",
-    noResets: "No banked resets are available.",
-    notApplicable: "No usage window is eligible for a reset yet.",
-    resetListTitle: "Choose a Codex reset",
-    resetConfirmTitle: "Use this reset?",
-    resetConfirm: (title: string, expires: string) =>
-      `${title} (expires ${expires}). This uses one banked reset.`,
-    resetSucceeded: "Codex usage limits were reset.",
-    resetNotNeeded: "No usage window was reset; the credit remains available.",
-    resetUnavailable: "No reset credit is available.",
-    resetAlreadyUsed: "This reset request was already completed.",
-    invalidResetResponse: "Unexpected reset response from OpenAI.",
-    resetRequestFailed: (status: number) => `Reset request failed (${status}).`,
-    resetsRequestFailed: (status: number) => `Could not load resets (${status}).`,
-    resetsCommandTitle: "List Codex resets",
-    resetsCommandDescription: "Show available banked resets",
-    resetCommandTitle: "Use a Codex reset",
-    resetCommandDescription: "Choose and use a banked reset",
-    loadingResets: "Fetching Codex resets...",
-    applyingReset: "Applying Codex reset...",
-    unknownReset: "unknown",
-    used: "used",
-    resets: "resets",
-    commandTitle: "Check Codex Limits",
-    commandDescription: "Show current Codex usage limits",
-    loading: "Fetching Codex usage limits...",
-    error: (message: string) => `Codex limits error: ${message}`,
-  },
-  uk: {
-    missingAuth: "Не знайдено auth.json OpenCode/Codex.",
-    missingAccessToken: (authPath: string) => `Не знайдено токен доступу у ${authPath}.`,
-    tokenRefreshFailed: (status: number, body: string) =>
-      `Не вдалося оновити токен (${status}): ${body}`,
-    usageRequestFailed: (status: number) => `Помилка запиту до API лімітів (${status}).`,
-    missingRateLimit: "У відповіді API немає rate_limit.",
-    missingWindows: "У відповіді API немає вікон лімітів використання.",
-    availableResets: (count: number) => `Доступно скидань: ${count}`,
-    fiveHourWindow: "5 годин",
-    weeklyWindow: "7 днів",
-    usageTitle: "Використання Codex",
-    noResets: "Немає доступних збережених скидань.",
-    notApplicable: "Зараз немає ліміту, який можна скинути.",
-    resetListTitle: "Оберіть скидання Codex",
-    resetConfirmTitle: "Використати це скидання?",
-    resetConfirm: (title: string, expires: string) =>
-      `${title} (діє до ${expires}). Буде витрачено одне скидання.`,
-    resetSucceeded: "Ліміти Codex скинуто.",
-    resetNotNeeded: "Ліміти не скинуто; скидання залишилося доступним.",
-    resetUnavailable: "Немає доступного скидання.",
-    resetAlreadyUsed: "Цей запит на скидання вже виконано.",
-    invalidResetResponse: "Неочікувана відповідь OpenAI на запит скидання.",
-    resetRequestFailed: (status: number) => `Не вдалося виконати скидання (${status}).`,
-    resetsRequestFailed: (status: number) => `Не вдалося отримати скидання (${status}).`,
-    resetsCommandTitle: "Список скидань Codex",
-    resetsCommandDescription: "Показати доступні збережені скидання",
-    resetCommandTitle: "Використати скидання Codex",
-    resetCommandDescription: "Обрати й використати скидання",
-    loadingResets: "Отримання скидань Codex...",
-    applyingReset: "Скидання лімітів Codex...",
-    unknownReset: "невідомо",
-    used: "використано",
-    resets: "скидання",
-    commandTitle: "Перевірити ліміти Codex",
-    commandDescription: "Показати поточні ліміти використання Codex",
-    loading: "Отримання лімітів Codex...",
-    error: (message: string) => `Помилка лімітів Codex: ${message}`,
-  },
-} satisfies Record<Locale, Record<string, unknown>>;
-
-function getLocale(): Locale {
-  try {
-    const locale = Intl.DateTimeFormat().resolvedOptions().locale;
-    if (/^uk(?:[-_]|$)/i.test(locale)) {
-      return "uk";
-    }
-  } catch {
-    // Fall through to the environment locale when Intl cannot resolve it.
-  }
-
-  const environmentLocale =
-    process.env.LC_ALL ?? process.env.LC_MESSAGES ?? process.env.LANG ?? "";
-
-  return /^uk(?:[-_]|$)/i.test(environmentLocale) ? "uk" : "en";
-}
-
-function getAuthFilePath(): string {
-  const home = os.homedir();
-  const openCodePath = [
-    path.join(home, ".local", "share", "opencode", "auth.json"),
-    process.env.LOCALAPPDATA
-      ? path.join(process.env.LOCALAPPDATA, "opencode", "auth.json")
-      : "",
-  ].find((filePath) => filePath && fs.existsSync(filePath));
-  const codexPath = path.join(home, ".codex", "auth.json");
-
-  if (!openCodePath) return fs.existsSync(codexPath) ? codexPath : "";
-  if (!fs.existsSync(codexPath)) return openCodePath;
-
-  // Prefer Codex's current token only when both clients use the same account.
-  try {
-    const openCode = JSON.parse(fs.readFileSync(openCodePath, "utf-8"));
-    const codex = JSON.parse(fs.readFileSync(codexPath, "utf-8"));
-    const codexExpiry = JSON.parse(
-      Buffer.from(codex.tokens?.access_token?.split(".")[1] ?? "", "base64url").toString("utf8"),
-    ).exp;
-    if (
-      openCode.openai?.accountId &&
-      openCode.openai.accountId === codex.tokens?.account_id &&
-      codex.tokens.access_token &&
-      openCode.openai.expires < Date.now() &&
-      typeof codexExpiry === "number" && codexExpiry * 1000 > Date.now() + 60_000
-    ) {
-      return codexPath;
-    }
-  } catch {
-    // Let the selected auth file report its own parse error below.
-  }
-
-  return openCodePath;
-}
-
-async function getValidToken(locale: Locale): Promise<string> {
-  const text = messages[locale];
-  const authPath = getAuthFilePath();
-
-  if (!authPath) {
-    throw new Error(text.missingAuth);
-  }
-
-  const authText = fs.readFileSync(authPath, "utf-8");
-  const auth = JSON.parse(authText);
-
-  const openai = auth.openai ?? auth.tokens ?? auth;
-
-  let token = openai.access ?? openai.access_token;
-
-  if (!token) {
-    throw new Error(text.missingAccessToken(authPath));
-  }
-
-  const expires = openai.expires;
-
-  const isExpiring =
-    typeof expires === "number" && expires - Date.now() < 5 * 60 * 1000;
-
-  const refreshToken = openai.refresh ?? openai.refresh_token;
-
-  if (isExpiring && refreshToken) {
-    const response = await fetch("https://auth.openai.com/oauth/token", {
-      method: "POST",
-
-      headers: {
-        "Content-Type": "application/json",
-      },
-
-      body: JSON.stringify({
-        grant_type: "refresh_token",
-        refresh_token: refreshToken,
-        client_id: OPENAI_CLIENT_ID,
-      }),
-    });
-
-    if (!response.ok) {
-      const body = await response.text();
-
-      throw new Error(text.tokenRefreshFailed(response.status, body));
-    }
-
-    const data: any = await response.json();
-
-    token = data.access_token;
-
-    openai.access = data.access_token;
-
-    if (data.refresh_token) {
-      openai.refresh = data.refresh_token;
-    }
-
-    openai.expires = Date.now() + (data.expires_in ?? 3600) * 1000;
-
-    fs.writeFileSync(authPath, JSON.stringify(auth, null, 2), "utf-8");
-  }
-
-  return token;
-}
-
-async function openAiRequest(
-  locale: Locale,
-  pathname: string,
-  init: RequestInit = {},
-  tokenOverride?: string,
-): Promise<Response> {
-  const token = tokenOverride ?? await getValidToken(locale);
-  return fetch(`${API_BASE}${pathname}`, {
-    ...init,
-    headers: {
-      Authorization: `Bearer ${token}`,
-      Accept: "application/json",
-      "User-Agent": "codex-cli",
-      ...init.headers,
-    },
-  });
-}
-
-async function loadUsage(locale: Locale, token?: string): Promise<any> {
-  const text = messages[locale];
-  const response = await openAiRequest(locale, "/usage", {}, token);
-
-  if (!response.ok) {
-    throw new Error(text.usageRequestFailed(response.status));
-  }
-
-  return response.json();
-}
-
-async function loadResetCredits(locale: Locale, token?: string): Promise<{
-  available_count: number;
-  credits: ResetCredit[];
-}> {
-  const response = await openAiRequest(locale, "/rate-limit-reset-credits", {}, token);
-  if (!response.ok) {
-    throw new Error(messages[locale].resetsRequestFailed(response.status));
-  }
-  const data = await response.json();
-  if (!Array.isArray(data.credits) || typeof data.available_count !== "number") {
-    throw new Error(messages[locale].invalidResetResponse);
-  }
-  return data;
-}
-
-function formatExpiry(expiresAt: string | null | undefined, locale: Locale): string {
-  if (!expiresAt) return messages[locale].unknownReset;
-  const date = new Date(expiresAt);
-  return Number.isNaN(date.valueOf())
-    ? messages[locale].unknownReset
-    : date.toLocaleString(locale === "uk" ? "uk-UA" : "en-US");
-}
-
-async function consumeResetCredit(locale: Locale, creditId: string, token: string): Promise<{
-  message: string;
-  variant: "success" | "info";
-}> {
-  const requestId = pendingRedemption?.creditId === creditId
-    ? pendingRedemption.requestId
-    : randomUUID();
-  pendingRedemption = { creditId, requestId };
-  const response = await openAiRequest(locale, "/rate-limit-reset-credits/consume", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ redeem_request_id: requestId, credit_id: creditId }),
-  }, token);
-  if (!response.ok) {
-    throw new Error(messages[locale].resetRequestFailed(response.status));
-  }
-  const data = await response.json();
-  if (["reset", "nothing_to_reset", "no_credit", "already_redeemed"].includes(data.code)) {
-    pendingRedemption = undefined;
-  }
-  switch (data.code) {
-    case "reset": return { message: messages[locale].resetSucceeded, variant: "success" };
-    case "nothing_to_reset": return { message: messages[locale].resetNotNeeded, variant: "info" };
-    case "no_credit": return { message: messages[locale].resetUnavailable, variant: "info" };
-    case "already_redeemed": return { message: messages[locale].resetAlreadyUsed, variant: "success" };
-    default: throw new Error(messages[locale].invalidResetResponse);
-  }
-}
-
-async function loadCodexLimits(locale: Locale): Promise<string> {
-  const text = messages[locale];
-  const data = await loadUsage(locale);
-
-  const rateLimit = data.rate_limit;
-
-  if (!rateLimit) {
-    throw new Error(text.missingRateLimit);
-  }
-
-  const windows = [rateLimit.primary_window, rateLimit.secondary_window].filter(
-    Boolean,
-  );
-
-  if (windows.length === 0) {
-    throw new Error(text.missingWindows);
-  }
-
-  const formatReset = (resetAt?: number) => {
-    if (!resetAt) {
-      return text.unknownReset;
-    }
-
-    return new Date(resetAt * 1000).toLocaleString(
-      locale === "uk" ? "uk-UA" : "en-US",
-      {
-        day: "2-digit",
-        month: "2-digit",
-        hour: "2-digit",
-        minute: "2-digit",
-      },
-    );
-  };
-
-  const formatWindow = (window: any) => {
-    const used =
-      window.used_percent !== undefined ? `${window.used_percent}%` : "?";
-
-    const seconds = window.limit_window_seconds;
-
-    let name = "Limit";
-
-    if (seconds === 18000) {
-      name = text.fiveHourWindow;
-    } else if (seconds === 604800) {
-      name = text.weeklyWindow;
-    } else if (seconds) {
-      const hours = seconds / 3600;
-
-      if (hours < 24) {
-        name = `${hours}h`;
-      } else {
-        name = `${Math.round(hours / 24)}d`;
-      }
-    }
-
-    return `${name}: ${used} ${text.used}, ${text.resets} ${formatReset(window.reset_at)}`;
-  };
-
-  const count = data.rate_limit_reset_credits?.available_count;
-  return [
-    ...windows.map(formatWindow),
-    typeof count === "number" ? text.availableResets(count) : null,
-  ].filter(Boolean).join("\n");
-}
-
-const plugin = {
-  id: "local.codex-limits",
-
-  async tui(api: any) {
+const v2 = Plugin.define({
+  id: "local.codex-limits.cli",
+  setup(context) {
     const locale = getLocale();
     const text = messages[locale];
+    const toast = context.ui.toast.show;
     const showError = (error: unknown) => {
       const message = error instanceof Error ? error.message : String(error);
       console.error("[codex-limits]", error);
-      api.ui.toast({ message: text.error(message), variant: "error", duration: 10000 });
+      toast({ message: text.error(message), variant: "error", duration: 10000 });
     };
 
     const availableCredits = (credits: ResetCredit[]) =>
       credits.filter((credit) => credit.status === "available" && credit.reset_type === "codex_rate_limits");
 
-    const describeCredit = (credit: ResetCredit) =>
-      `${credit.title || "Full reset"} · ${formatExpiry(credit.expires_at, locale)}`;
-
-    const dispose = api.keymap.registerLayer({
+    context.keymap.layer(() => ({
+      mode: "global",
       commands: [
         {
-          namespace: "palette",
-
-          name: "codex-limits",
-
+          id: "codex-limits",
           title: text.commandTitle,
-
-          desc: text.commandDescription,
-
-          category: "Codex",
-
-          slashName: "codex-limits",
-
+          description: text.commandDescription,
+          group: "Codex",
+          palette: true,
+          slash: { name: "codex-limits" },
           run: async () => {
             try {
-              api.ui.toast({
-                message: text.loading,
-
-                variant: "info",
-              });
-
-              const message = await loadCodexLimits(locale);
-
-              api.ui.toast({
-                title: text.usageTitle,
-                message,
-
-                variant: "success",
-
-                duration: 8000,
-              });
+              toast({ message: text.loading, variant: "info" });
+              toast({ title: text.usageTitle, message: await loadCodexLimits(locale), variant: "success", duration: 8000 });
             } catch (error) { showError(error); }
           },
         },
         {
-          namespace: "palette",
-          name: "codex-resets",
+          id: "codex-resets",
           title: text.resetsCommandTitle,
-          desc: text.resetsCommandDescription,
-          category: "Codex",
-          slashName: "codex-resets",
+          description: text.resetsCommandDescription,
+          group: "Codex",
+          palette: true,
+          slash: { name: "codex-resets" },
           run: async () => {
             try {
-              api.ui.toast({ message: text.loadingResets, variant: "info" });
+              toast({ message: text.loadingResets, variant: "info" });
               const data = await loadResetCredits(locale);
               const credits = availableCredits(data.credits);
-              api.ui.toast({
+              toast({
                 message: credits.length
-                  ? `${text.availableResets(data.available_count)} | ${credits.map(describeCredit).join(" | ")}`
+                  ? `${text.availableResets(data.available_count)} | ${credits.map((credit) =>
+                      `${credit.title || "Full reset"} · ${formatExpiry(credit.expires_at, locale)}`).join(" | ")}`
                   : text.noResets,
                 variant: "info",
                 duration: 12000,
@@ -440,65 +67,53 @@ const plugin = {
           },
         },
         {
-          namespace: "palette",
-          name: "codex-reset",
+          id: "codex-reset",
           title: text.resetCommandTitle,
-          desc: text.resetCommandDescription,
-          category: "Codex",
-          slashName: "codex-reset",
+          description: text.resetCommandDescription,
+          group: "Codex",
+          palette: true,
+          slash: { name: "codex-reset" },
           run: async () => {
             try {
-              api.ui.toast({ message: text.loadingResets, variant: "info" });
+              toast({ message: text.loadingResets, variant: "info" });
               const token = await getValidToken(locale);
               const [usage, data] = await Promise.all([loadUsage(locale, token), loadResetCredits(locale, token)]);
               const credits = availableCredits(data.credits);
               if (!credits.length) {
-                api.ui.toast({ message: text.noResets, variant: "info" });
+                toast({ message: text.noResets, variant: "info" });
                 return;
               }
               if (usage.rate_limit_reset_credits?.applicable_available_count === 0) {
-                api.ui.toast({ message: text.notApplicable, variant: "info" });
+                toast({ message: text.notApplicable, variant: "info" });
                 return;
               }
 
-              api.ui.dialog.replace(() => api.ui.DialogSelect({
+              const creditID = await context.ui.dialog.select({
                 title: text.resetListTitle,
                 options: credits.map((credit) => ({
                   title: credit.title || "Full reset",
                   description: formatExpiry(credit.expires_at, locale),
-                  value: credit,
+                  value: credit.id,
                 })),
-                onSelect: (option: { value: ResetCredit }) => {
-                  const credit = option.value;
-                  let applying = false;
-                  api.ui.dialog.replace(() => api.ui.DialogConfirm({
-                    title: text.resetConfirmTitle,
-                    message: text.resetConfirm(credit.title || "Full reset", formatExpiry(credit.expires_at, locale)),
-                    onCancel: () => api.ui.dialog.clear(),
-                    onConfirm: () => {
-                      if (applying) return;
-                      applying = true;
-                      api.ui.dialog.clear();
-                      api.ui.toast({ message: text.applyingReset, variant: "info" });
-                      consumeResetCredit(locale, credit.id, token)
-                        .then(({ message, variant }) => api.ui.toast({ message, variant, duration: 10000 }))
-                        .catch(showError);
-                    },
-                  }));
-                },
-              }));
+              });
+              const credit = credits.find((item) => item.id === creditID);
+              if (!credit) return;
+              const confirmed = await context.ui.dialog.confirm({
+                title: text.resetConfirmTitle,
+                message: text.resetConfirm(credit.title || "Full reset", formatExpiry(credit.expires_at, locale)),
+                label: { confirm: text.resetCommandTitle, cancel: "Cancel" },
+              });
+              if (!confirmed) return;
+              toast({ message: text.applyingReset, variant: "info" });
+              const result = await consumeResetCredit(locale, credit.id, token);
+              toast({ ...result, duration: 10000 });
             } catch (error) { showError(error); }
           },
         },
       ],
-    });
-
-    api.lifecycle?.onDispose?.(() => {
-      if (typeof dispose === "function") {
-        dispose();
-      }
-    });
+    }));
   },
-};
+});
 
-export default plugin;
+// V1 invokes tui(api); V2 invokes setup(context). Neither API is translated into the other.
+export default { ...v2, tui: legacy.tui };

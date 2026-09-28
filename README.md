@@ -1,6 +1,6 @@
 # OpenCode Codex Limits
 
-A small OpenCode TUI plugin that displays your current Codex usage limits.
+A small OpenCode 1 (1.18.29+) and OpenCode 2 TUI plugin that displays your current Codex usage limits.
 
 ## Features
 
@@ -12,15 +12,28 @@ A small OpenCode TUI plugin that displays your current Codex usage limits.
 
 ## Installation
 
-### Install for the current project
+### OpenCode 2
 
 Run from your project directory:
 
 ```powershell
-opencode plugin github:Vladipz/opencode-codex-limits
+opencode plugin add github:Vladipz/opencode-codex-limits
 ```
 
-### Install globally
+OpenCode 2 installs package plugins in the global configuration. The server entrypoint
+loads the TUI plugin automatically; do not add the same package to `cli.json`.
+
+To configure an already installed package manually, use `~/.config/opencode/opencode.json`:
+
+```json
+{
+  "plugins": ["github:Vladipz/opencode-codex-limits"]
+}
+```
+
+The `./tui` export is loaded automatically by OpenCode 2. Restart OpenCode after updating an installed Git package.
+
+### OpenCode 1 (1.18.29+)
 
 Install for all projects:
 
@@ -30,7 +43,7 @@ opencode plugin github:Vladipz/opencode-codex-limits --global
 
 Restart OpenCode after installation.
 
-### Add the plugin manually
+### Add the OpenCode 1 plugin manually
 
 Add the plugin spec to the `plugin` array in your TUI config. For a global install, edit:
 
@@ -70,7 +83,7 @@ The plugin reads the local OpenCode or Codex authentication session. If both exi
 
 ## Uninstall
 
-To uninstall, remove the plugin spec from the `plugin` array in the TUI config where you installed it: the project's `.opencode/tui.json` or your global `~/.config/opencode/tui.json`.
+To uninstall from OpenCode 2, remove the package with `opencode plugin remove github:Vladipz/opencode-codex-limits` or remove its entry from the `plugins` array in `opencode.json`. On OpenCode 1, remove its entry from the `plugin` array in the project's `.opencode/tui.json` or the global `~/.config/opencode/tui.json`.
 
 ## Disclaimer
 

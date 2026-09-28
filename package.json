@@ -1,14 +1,20 @@
 {
   "name": "opencode-codex-limits",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "description": "OpenCode TUI plugin for displaying Codex usage limits",
   "type": "module",
   "license": "MIT",
   "scripts": {
-    "test": "node --test src/tui.test.mjs"
+    "test": "node --test src/tui.test.mjs",
+    "typecheck": "tsc --noEmit --module nodenext --moduleResolution nodenext --target es2022 --allowImportingTsExtensions --skipLibCheck --types node src/index.ts src/tui.ts"
   },
   "exports": {
+    ".": "./src/index.ts",
     "./tui": "./src/tui.ts"
+  },
+  "dependencies": {
+    "@opencode/plugin": "^2.0.18",
+    "solid-js": "^1.9.0"
   },
   "files": [
     "src"
@@ -18,5 +24,9 @@
     "codex",
     "openai",
     "plugin"
-  ]
+  ],
+  "devDependencies": {
+    "@types/node": "^24.19.0",
+    "typescript": "^5.9.3"
+  }
 }
