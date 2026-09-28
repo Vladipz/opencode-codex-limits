@@ -12,13 +12,55 @@ A small OpenCode TUI plugin that displays your current Codex usage limits.
 
 ## Installation
 
-Install directly from GitHub:
+### Install for the current project
 
-```bash
+Run from your project directory:
+
+```powershell
 opencode plugin github:Vladipz/opencode-codex-limits
 ```
 
-Then restart OpenCode.
+### Install globally
+
+Install for all projects:
+
+```powershell
+opencode plugin github:Vladipz/opencode-codex-limits --global
+```
+
+Restart OpenCode after installation.
+
+### Add the plugin manually
+
+Add the plugin spec to the `plugin` array in your TUI config. For a global install, edit:
+
+- Windows: `%USERPROFILE%\.config\opencode\tui.json`
+- macOS/Linux: `~/.config/opencode/tui.json`
+
+To load the published GitHub package, add:
+
+```json
+{
+  "$schema": "https://opencode.ai/tui.json",
+  "plugin": [
+    "github:Vladipz/opencode-codex-limits"
+  ]
+}
+```
+
+To load a local clone instead, use its absolute path as a `file://` URL. For example:
+
+```json
+{
+  "$schema": "https://opencode.ai/tui.json",
+  "plugin": [
+    "file:///Users/yourname/Downloads/opencode-codex-limits"
+  ]
+}
+```
+
+On Windows, a local path uses URL form, for example `file:///C:/Users/yourname/Downloads/opencode-codex-limits`.
+After editing the config, restart OpenCode.
 
 ## Usage
 
@@ -28,7 +70,7 @@ The plugin reads the local OpenCode or Codex authentication session. If both exi
 
 ## Uninstall
 
-To uninstall, remove `github:Vladipz/opencode-codex-limits` from the `plugin` array in `.opencode/tui.json` (project install) or your global `tui.json` (global install).
+To uninstall, remove the plugin spec from the `plugin` array in the TUI config where you installed it: the project's `.opencode/tui.json` or your global `~/.config/opencode/tui.json`.
 
 ## Disclaimer
 
