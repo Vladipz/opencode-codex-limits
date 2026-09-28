@@ -75,6 +75,7 @@ const v2 = Plugin.define({
           slash: { name: "codex-limits" },
           run: async () => {
             try {
+              toast({ message: text.loading, variant: "info" });
               const data = await loadUsage(locale);
               await context.ui.dialog.alert({ title: text.usageTitle, message: usageReport(data, locale) });
             } catch (error) { showError(error); }
@@ -89,6 +90,7 @@ const v2 = Plugin.define({
           slash: { name: "codex-resets" },
           run: async () => {
             try {
+              toast({ message: text.loadingResets, variant: "info" });
               const data = await loadResetCredits(locale);
               const credits = availableCredits(data.credits);
               await context.ui.dialog.alert({
