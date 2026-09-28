@@ -1,8 +1,20 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 
 const OPENAI_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
+const API_BASE = "https://chatgpt.com/backend-api/wham";
+
+type ResetCredit = {
+  id: string;
+  reset_type: string;
+  status: string;
+  expires_at?: string | null;
+  title?: string | null;
+};
+
+let pendingRedemption: { creditId: string; requestId: string } | undefined;
 
 type Locale = "en" | "uk";
 
@@ -12,10 +24,32 @@ const messages = {
     missingAccessToken: (authPath: string) => `Access token not found in ${authPath}.`,
     tokenRefreshFailed: (status: number, body: string) =>
       `Token refresh failed (${status}): ${body}`,
-    usageRequestFailed: (status: number, body: string) =>
-      `Usage API request failed (${status}): ${body}`,
+    usageRequestFailed: (status: number) => `Usage API request failed (${status}).`,
     missingRateLimit: "The API response did not contain rate_limit.",
     missingWindows: "The API response did not contain usage limit windows.",
+    availableResets: (count: number) => `${count} reset${count === 1 ? "" : "s"} available`,
+    fiveHourWindow: "5 hours",
+    weeklyWindow: "7 days",
+    usageTitle: "Codex usage",
+    noResets: "No banked resets are available.",
+    notApplicable: "No usage window is eligible for a reset yet.",
+    resetListTitle: "Choose a Codex reset",
+    resetConfirmTitle: "Use this reset?",
+    resetConfirm: (title: string, expires: string) =>
+      `${title} (expires ${expires}). This uses one banked reset.`,
+    resetSucceeded: "Codex usage limits were reset.",
+    resetNotNeeded: "No usage window was reset; the credit remains available.",
+    resetUnavailable: "No reset credit is available.",
+    resetAlreadyUsed: "This reset request was already completed.",
+    invalidResetResponse: "Unexpected reset response from OpenAI.",
+    resetRequestFailed: (status: number) => `Reset request failed (${status}).`,
+    resetsRequestFailed: (status: number) => `Could not load resets (${status}).`,
+    resetsCommandTitle: "List Codex resets",
+    resetsCommandDescription: "Show available banked resets",
+    resetCommandTitle: "Use a Codex reset",
+    resetCommandDescription: "Choose and use a banked reset",
+    loadingResets: "Fetching Codex resets...",
+    applyingReset: "Applying Codex reset...",
     unknownReset: "unknown",
     used: "used",
     resets: "resets",
@@ -29,10 +63,32 @@ const messages = {
     missingAccessToken: (authPath: string) => `Не знайдено токен доступу у ${authPath}.`,
     tokenRefreshFailed: (status: number, body: string) =>
       `Не вдалося оновити токен (${status}): ${body}`,
-    usageRequestFailed: (status: number, body: string) =>
-      `Помилка запиту до API лімітів (${status}): ${body}`,
+    usageRequestFailed: (status: number) => `Помилка запиту до API лімітів (${status}).`,
     missingRateLimit: "У відповіді API немає rate_limit.",
     missingWindows: "У відповіді API немає вікон лімітів використання.",
+    availableResets: (count: number) => `Доступно скидань: ${count}`,
+    fiveHourWindow: "5 годин",
+    weeklyWindow: "7 днів",
+    usageTitle: "Використання Codex",
+    noResets: "Немає доступних збережених скидань.",
+    notApplicable: "Зараз немає ліміту, який можна скинути.",
+    resetListTitle: "Оберіть скидання Codex",
+    resetConfirmTitle: "Використати це скидання?",
+    resetConfirm: (title: string, expires: string) =>
+      `${title} (діє до ${expires}). Буде витрачено одне скидання.`,
+    resetSucceeded: "Ліміти Codex скинуто.",
+    resetNotNeeded: "Ліміти не скинуто; скидання залишилося доступним.",
+    resetUnavailable: "Немає доступного скидання.",
+    resetAlreadyUsed: "Цей запит на скидання вже виконано.",
+    invalidResetResponse: "Неочікувана відповідь OpenAI на запит скидання.",
+    resetRequestFailed: (status: number) => `Не вдалося виконати скидання (${status}).`,
+    resetsRequestFailed: (status: number) => `Не вдалося отримати скидання (${status}).`,
+    resetsCommandTitle: "Список скидань Codex",
+    resetsCommandDescription: "Показати доступні збережені скидання",
+    resetCommandTitle: "Використати скидання Codex",
+    resetCommandDescription: "Обрати й використати скидання",
+    loadingResets: "Отримання скидань Codex...",
+    applyingReset: "Скидання лімітів Codex...",
     unknownReset: "невідомо",
     used: "використано",
     resets: "скидання",
@@ -61,23 +117,38 @@ function getLocale(): Locale {
 
 function getAuthFilePath(): string {
   const home = os.homedir();
-
-  const possiblePaths = [
-    // OpenCode Linux/macOS
+  const openCodePath = [
     path.join(home, ".local", "share", "opencode", "auth.json"),
-
-    // Codex
-    path.join(home, ".codex", "auth.json"),
-
-    // OpenCode Windows
     process.env.LOCALAPPDATA
       ? path.join(process.env.LOCALAPPDATA, "opencode", "auth.json")
       : "",
-  ];
+  ].find((filePath) => filePath && fs.existsSync(filePath));
+  const codexPath = path.join(home, ".codex", "auth.json");
 
-  return (
-    possiblePaths.find((filePath) => filePath && fs.existsSync(filePath)) ?? ""
-  );
+  if (!openCodePath) return fs.existsSync(codexPath) ? codexPath : "";
+  if (!fs.existsSync(codexPath)) return openCodePath;
+
+  // Prefer Codex's current token only when both clients use the same account.
+  try {
+    const openCode = JSON.parse(fs.readFileSync(openCodePath, "utf-8"));
+    const codex = JSON.parse(fs.readFileSync(codexPath, "utf-8"));
+    const codexExpiry = JSON.parse(
+      Buffer.from(codex.tokens?.access_token?.split(".")[1] ?? "", "base64url").toString("utf8"),
+    ).exp;
+    if (
+      openCode.openai?.accountId &&
+      openCode.openai.accountId === codex.tokens?.account_id &&
+      codex.tokens.access_token &&
+      openCode.openai.expires < Date.now() &&
+      typeof codexExpiry === "number" && codexExpiry * 1000 > Date.now() + 60_000
+    ) {
+      return codexPath;
+    }
+  } catch {
+    // Let the selected auth file report its own parse error below.
+  }
+
+  return openCodePath;
 }
 
 async function getValidToken(locale: Locale): Promise<string> {
@@ -91,7 +162,7 @@ async function getValidToken(locale: Locale): Promise<string> {
   const authText = fs.readFileSync(authPath, "utf-8");
   const auth = JSON.parse(authText);
 
-  const openai = auth.openai ?? auth;
+  const openai = auth.openai ?? auth.tokens ?? auth;
 
   let token = openai.access ?? openai.access_token;
 
@@ -145,28 +216,90 @@ async function getValidToken(locale: Locale): Promise<string> {
   return token;
 }
 
-async function loadCodexLimits(locale: Locale): Promise<string> {
-  const text = messages[locale];
-  const token = await getValidToken(locale);
-
-  const response = await fetch("https://chatgpt.com/backend-api/wham/usage", {
-    method: "GET",
+async function openAiRequest(
+  locale: Locale,
+  pathname: string,
+  init: RequestInit = {},
+  tokenOverride?: string,
+): Promise<Response> {
+  const token = tokenOverride ?? await getValidToken(locale);
+  return fetch(`${API_BASE}${pathname}`, {
+    ...init,
     headers: {
       Authorization: `Bearer ${token}`,
       Accept: "application/json",
       "User-Agent": "codex-cli",
+      ...init.headers,
     },
   });
+}
+
+async function loadUsage(locale: Locale, token?: string): Promise<any> {
+  const text = messages[locale];
+  const response = await openAiRequest(locale, "/usage", {}, token);
 
   if (!response.ok) {
-    const body = await response.text();
-
-    throw new Error(text.usageRequestFailed(response.status, body));
+    throw new Error(text.usageRequestFailed(response.status));
   }
 
-  const data: any = await response.json();
+  return response.json();
+}
 
-  console.log("[codex-limits] response:", JSON.stringify(data, null, 2));
+async function loadResetCredits(locale: Locale, token?: string): Promise<{
+  available_count: number;
+  credits: ResetCredit[];
+}> {
+  const response = await openAiRequest(locale, "/rate-limit-reset-credits", {}, token);
+  if (!response.ok) {
+    throw new Error(messages[locale].resetsRequestFailed(response.status));
+  }
+  const data = await response.json();
+  if (!Array.isArray(data.credits) || typeof data.available_count !== "number") {
+    throw new Error(messages[locale].invalidResetResponse);
+  }
+  return data;
+}
+
+function formatExpiry(expiresAt: string | null | undefined, locale: Locale): string {
+  if (!expiresAt) return messages[locale].unknownReset;
+  const date = new Date(expiresAt);
+  return Number.isNaN(date.valueOf())
+    ? messages[locale].unknownReset
+    : date.toLocaleString(locale === "uk" ? "uk-UA" : "en-US");
+}
+
+async function consumeResetCredit(locale: Locale, creditId: string, token: string): Promise<{
+  message: string;
+  variant: "success" | "info";
+}> {
+  const requestId = pendingRedemption?.creditId === creditId
+    ? pendingRedemption.requestId
+    : randomUUID();
+  pendingRedemption = { creditId, requestId };
+  const response = await openAiRequest(locale, "/rate-limit-reset-credits/consume", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ redeem_request_id: requestId, credit_id: creditId }),
+  }, token);
+  if (!response.ok) {
+    throw new Error(messages[locale].resetRequestFailed(response.status));
+  }
+  const data = await response.json();
+  if (["reset", "nothing_to_reset", "no_credit", "already_redeemed"].includes(data.code)) {
+    pendingRedemption = undefined;
+  }
+  switch (data.code) {
+    case "reset": return { message: messages[locale].resetSucceeded, variant: "success" };
+    case "nothing_to_reset": return { message: messages[locale].resetNotNeeded, variant: "info" };
+    case "no_credit": return { message: messages[locale].resetUnavailable, variant: "info" };
+    case "already_redeemed": return { message: messages[locale].resetAlreadyUsed, variant: "success" };
+    default: throw new Error(messages[locale].invalidResetResponse);
+  }
+}
+
+async function loadCodexLimits(locale: Locale): Promise<string> {
+  const text = messages[locale];
+  const data = await loadUsage(locale);
 
   const rateLimit = data.rate_limit;
 
@@ -207,9 +340,9 @@ async function loadCodexLimits(locale: Locale): Promise<string> {
     let name = "Limit";
 
     if (seconds === 18000) {
-      name = "5h";
+      name = text.fiveHourWindow;
     } else if (seconds === 604800) {
-      name = "7d";
+      name = text.weeklyWindow;
     } else if (seconds) {
       const hours = seconds / 3600;
 
@@ -223,7 +356,11 @@ async function loadCodexLimits(locale: Locale): Promise<string> {
     return `${name}: ${used} ${text.used}, ${text.resets} ${formatReset(window.reset_at)}`;
   };
 
-  return windows.map(formatWindow).join(" | ");
+  const count = data.rate_limit_reset_credits?.available_count;
+  return [
+    ...windows.map(formatWindow),
+    typeof count === "number" ? text.availableResets(count) : null,
+  ].filter(Boolean).join("\n");
 }
 
 const plugin = {
@@ -232,6 +369,17 @@ const plugin = {
   async tui(api: any) {
     const locale = getLocale();
     const text = messages[locale];
+    const showError = (error: unknown) => {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error("[codex-limits]", error);
+      api.ui.toast({ message: text.error(message), variant: "error", duration: 10000 });
+    };
+
+    const availableCredits = (credits: ResetCredit[]) =>
+      credits.filter((credit) => credit.status === "available" && credit.reset_type === "codex_rate_limits");
+
+    const describeCredit = (credit: ResetCredit) =>
+      `${credit.title || "Full reset"} · ${formatExpiry(credit.expires_at, locale)}`;
 
     const dispose = api.keymap.registerLayer({
       commands: [
@@ -259,26 +407,87 @@ const plugin = {
               const message = await loadCodexLimits(locale);
 
               api.ui.toast({
+                title: text.usageTitle,
                 message,
 
                 variant: "success",
 
                 duration: 8000,
               });
-            } catch (error) {
-              const message =
-                error instanceof Error ? error.message : String(error);
-
-              console.error("[codex-limits]", error);
-
+            } catch (error) { showError(error); }
+          },
+        },
+        {
+          namespace: "palette",
+          name: "codex-resets",
+          title: text.resetsCommandTitle,
+          desc: text.resetsCommandDescription,
+          category: "Codex",
+          slashName: "codex-resets",
+          run: async () => {
+            try {
+              api.ui.toast({ message: text.loadingResets, variant: "info" });
+              const data = await loadResetCredits(locale);
+              const credits = availableCredits(data.credits);
               api.ui.toast({
-                message: text.error(message),
-
-                variant: "error",
-
-                duration: 10000,
+                message: credits.length
+                  ? `${text.availableResets(data.available_count)} | ${credits.map(describeCredit).join(" | ")}`
+                  : text.noResets,
+                variant: "info",
+                duration: 12000,
               });
-            }
+            } catch (error) { showError(error); }
+          },
+        },
+        {
+          namespace: "palette",
+          name: "codex-reset",
+          title: text.resetCommandTitle,
+          desc: text.resetCommandDescription,
+          category: "Codex",
+          slashName: "codex-reset",
+          run: async () => {
+            try {
+              api.ui.toast({ message: text.loadingResets, variant: "info" });
+              const token = await getValidToken(locale);
+              const [usage, data] = await Promise.all([loadUsage(locale, token), loadResetCredits(locale, token)]);
+              const credits = availableCredits(data.credits);
+              if (!credits.length) {
+                api.ui.toast({ message: text.noResets, variant: "info" });
+                return;
+              }
+              if (usage.rate_limit_reset_credits?.applicable_available_count === 0) {
+                api.ui.toast({ message: text.notApplicable, variant: "info" });
+                return;
+              }
+
+              api.ui.dialog.replace(() => api.ui.DialogSelect({
+                title: text.resetListTitle,
+                options: credits.map((credit) => ({
+                  title: credit.title || "Full reset",
+                  description: formatExpiry(credit.expires_at, locale),
+                  value: credit,
+                })),
+                onSelect: (option: { value: ResetCredit }) => {
+                  const credit = option.value;
+                  let applying = false;
+                  api.ui.dialog.replace(() => api.ui.DialogConfirm({
+                    title: text.resetConfirmTitle,
+                    message: text.resetConfirm(credit.title || "Full reset", formatExpiry(credit.expires_at, locale)),
+                    onCancel: () => api.ui.dialog.clear(),
+                    onConfirm: () => {
+                      if (applying) return;
+                      applying = true;
+                      api.ui.dialog.clear();
+                      api.ui.toast({ message: text.applyingReset, variant: "info" });
+                      consumeResetCredit(locale, credit.id, token)
+                        .then(({ message, variant }) => api.ui.toast({ message, variant, duration: 10000 }))
+                        .catch(showError);
+                    },
+                  }));
+                },
+              }));
+            } catch (error) { showError(error); }
           },
         },
       ],
