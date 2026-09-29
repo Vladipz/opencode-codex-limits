@@ -10,7 +10,7 @@
   },
   "exports": {
     ".": "./src/index.ts",
-    "./tui": "./src/tui-v2.ts"
+    "./tui": "./src/tui.ts"
   },
   "dependencies": {
     "@opencode/plugin": "^2.0.19",

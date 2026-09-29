@@ -1,3 +1,4 @@
+/** @jsxImportSource @opentui/solid */
 import { createSignal } from "solid-js";
 import type { UsageStatus } from "./status.tsx";
 
