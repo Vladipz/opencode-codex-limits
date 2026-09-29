@@ -25,17 +25,18 @@ export function registerStatus(
 ): StatusControls {
   const [usage, setUsage] = createSignal<UsageStatus>();
   const [error, setError] = createSignal<string>();
-  const savedPanel = api.kv.get("codex-limits.showPanel", defaults.showPanel);
-  const savedResets = api.kv.get("codex-limits.showResets", defaults.showResets);
+  const savedPanel = api.kv?.get?.("codex-limits.showPanel", defaults.showPanel) ?? defaults.showPanel;
+  const savedResets = api.kv?.get?.("codex-limits.showResets", defaults.showResets) ?? defaults.showResets;
   const [showPanel, setShowPanel] = createSignal(savedPanel === true);
   const [showResets, setShowResets] = createSignal(savedResets === true);
   let disposed = false;
   let busy = false;
   const limitColor = (remaining?: number) => {
-    if (remaining === undefined) return api.theme.current.textMuted;
-    if (remaining < 20) return api.theme.current.error;
-    if (remaining < 50) return api.theme.current.warning;
-    return api.theme.current.success;
+    const theme = api.theme?.current;
+    if (remaining === undefined) return theme?.textMuted;
+    if (remaining < 20) return theme?.error;
+    if (remaining < 50) return theme?.warning;
+    return theme?.success;
   };
 
   const refresh = async () => {
@@ -57,7 +58,7 @@ export function registerStatus(
     }
   };
 
-  api.slots.register({
+  api.slots?.register?.({
     slots: {
       sidebar_content: () => showPanel() ? (
         <box flexDirection="column" width="100%" paddingTop={1}>
@@ -66,11 +67,11 @@ export function registerStatus(
             <box flexDirection="row" width="100%">
               <text width={10}>{window.label}</text>
               <text width={6} fg={limitColor(window.remainingPercent)}>{window.remaining}</text>
-              <text fg={api.theme.current.textMuted}>{window.reset}</text>
+            <text fg={api.theme?.current?.textMuted}>{window.reset}</text>
             </box>
           ))}
           {showResets() && usage()?.resets !== undefined && (
-            <text fg={api.theme.current.textMuted}>Resets available: {usage()?.resets}</text>
+          <text fg={api.theme?.current?.textMuted}>Resets available: {usage()?.resets}</text>
           )}
           {!usage() && <text>{error() ?? "Loading limits..."}</text>}
         </box>
@@ -92,14 +93,14 @@ export function registerStatus(
     togglePanel: () => {
       const next = !showPanel();
       setShowPanel(next);
-      api.kv.set("codex-limits.showPanel", next);
+      api.kv?.set?.("codex-limits.showPanel", next);
       if (next) void refresh();
       return next;
     },
     toggleResets: () => {
       const next = !showResets();
       setShowResets(next);
-      api.kv.set("codex-limits.showResets", next);
+      api.kv?.set?.("codex-limits.showResets", next);
       return next;
     },
   };
