@@ -4,13 +4,16 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import plugin from "./tui.ts";
+import server from "./index.ts";
 
 const originalHome = process.env.HOME;
+const originalUserProfile = process.env.USERPROFILE;
 const originalFetch = globalThis.fetch;
 const home = fs.mkdtempSync(path.join(os.tmpdir(), "codex-limits-test-"));
 
 before(() => {
   process.env.HOME = home;
+  process.env.USERPROFILE = home;
   const authPath = path.join(home, ".codex", "auth.json");
   fs.mkdirSync(path.dirname(authPath), { recursive: true });
   fs.writeFileSync(authPath, JSON.stringify({ tokens: { access_token: "test-token" } }));
@@ -18,6 +21,7 @@ before(() => {
 
 after(() => {
   process.env.HOME = originalHome;
+  process.env.USERPROFILE = originalUserProfile;
   globalThis.fetch = originalFetch;
   fs.rmSync(home, { recursive: true, force: true });
 });
@@ -41,6 +45,138 @@ function setupUi() {
   };
   return { api, toasts, command: (name) => commands.find((item) => item.name === name), getDialog: () => dialog };
 }
+
+function setupV2Ui(selection = "credit-2", confirmed = true) {
+  let layer;
+  const toasts = [];
+  const dialogs = [];
+  plugin.setup({
+    keymap: { layer: (register) => { layer = register(); } },
+    ui: {
+      slot: ({ render }) => render(),
+      toast: { show: (toast) => toasts.push(toast) },
+      dialog: {
+        alert: async (input) => { dialogs.push(input); },
+        select: async (input) => { dialogs.push(input); return selection; },
+        confirm: async (input) => { dialogs.push(input); return confirmed; },
+      },
+    },
+  });
+  return { toasts, dialogs, command: (id) => layer.commands.find((command) => command.id === id) };
+}
+
+test("exposes the V2 server and TUI entrypoints alongside the V1 TUI hook", () => {
+  assert.equal(typeof server.setup, "function");
+  assert.equal(typeof server.server, "function");
+  assert.equal(typeof plugin.setup, "function");
+  assert.equal(typeof plugin.tui, "function");
+});
+
+test("V2 registers all commands and confirms a selected reset before consuming it", async () => {
+  const calls = [];
+  globalThis.fetch = async (url, init = {}) => {
+    calls.push({ url: String(url), init });
+    assert.equal(init.headers.Authorization, "Bearer test-token");
+    if (String(url).endsWith("/usage")) return Response.json({
+      rate_limit: {
+        primary_window: { used_percent: 95, limit_window_seconds: 18000, reset_at: 1790000000 },
+        secondary_window: { used_percent: 6, limit_window_seconds: 604800, reset_at: 1790600000 },
+      },
+      rate_limit_reset_credits: { available_count: 2, applicable_available_count: 2 },
+    });
+    if (String(url).endsWith("/rate-limit-reset-credits")) return Response.json({
+      available_count: 2,
+      credits: [
+        { id: "credit-1", reset_type: "codex_rate_limits", status: "available", title: "First reset" },
+        { id: "credit-2", reset_type: "codex_rate_limits", status: "available", title: "Second reset" },
+      ],
+    });
+    if (String(url).endsWith("/consume")) return Response.json({ code: "reset" });
+    throw new Error(`Unexpected URL: ${url}`);
+  };
+
+  const ui = setupV2Ui();
+  for (const name of ["codex-limits", "codex-resets", "codex-reset"]) {
+    assert.equal(ui.command(name).slash.name, name);
+    assert.equal(ui.command(name).palette, true);
+  }
+  await ui.command("codex-limits").run();
+  assert.equal(ui.toasts[0].message, "Fetching Codex usage limits...");
+  assert.equal(ui.toasts[0].duration, 30000);
+  assert.equal(ui.toasts[1].title, "Codex usage");
+  assert.match(ui.toasts[1].message, /^5 hours: 95% used\nResets: .+\n\n7 days: 6% used\nResets: .+\n\n2 resets available$/);
+  assert.equal(ui.dialogs.length, 0);
+  await ui.command("codex-resets").run();
+  assert.equal(ui.toasts[2].message, "Fetching Codex resets...");
+  assert.equal(ui.toasts[2].duration, 30000);
+  assert.equal(ui.dialogs[0].title, "List Codex resets");
+  assert.match(ui.dialogs[0].message, /^2 resets available\n\nFirst reset\nExpires: .+\n\nSecond reset\nExpires: .+$/);
+  await ui.command("codex-reset").run();
+  assert.equal(ui.dialogs[1].options[1].value, "credit-2");
+  assert.match(ui.dialogs[2].message, /Second reset/);
+  assert.equal(JSON.parse(calls.find((call) => call.url.endsWith("/consume")).init.body).credit_id, "credit-2");
+  assert.match(ui.toasts.at(-1).message, /usage limits were reset/);
+});
+
+test("V2 shows loading feedback before usage and reset requests finish", async () => {
+  let resolveUsage;
+  let resolveResets;
+  globalThis.fetch = (url) => new Promise((resolve) => {
+    if (String(url).endsWith("/usage")) resolveUsage = resolve;
+    else if (String(url).endsWith("/rate-limit-reset-credits")) resolveResets = resolve;
+    else throw new Error(`Unexpected URL: ${url}`);
+  });
+
+  const ui = setupV2Ui();
+  const usage = ui.command("codex-limits").run();
+  assert.equal(ui.toasts.at(-1).message, "Fetching Codex usage limits...");
+  assert.equal(ui.dialogs.length, 0);
+  await new Promise((resolve) => setImmediate(resolve));
+  resolveUsage(Response.json({
+    rate_limit: { primary_window: { used_percent: 24, limit_window_seconds: 18000 } },
+  }));
+  await usage;
+  assert.equal(ui.dialogs.length, 0);
+  assert.equal(ui.toasts.at(-1).title, "Codex usage");
+
+  const resets = ui.command("codex-resets").run();
+  assert.equal(ui.toasts.at(-1).message, "Fetching Codex resets...");
+  assert.equal(ui.dialogs.length, 0);
+  await new Promise((resolve) => setImmediate(resolve));
+  resolveResets(Response.json({ available_count: 0, credits: [] }));
+  await resets;
+  assert.equal(ui.dialogs.length, 1);
+});
+
+test("V2 does not consume a reset when confirmation is cancelled", async () => {
+  let consumed = false;
+  globalThis.fetch = async (url) => {
+    if (String(url).endsWith("/usage")) return Response.json({ rate_limit_reset_credits: { applicable_available_count: 1 } });
+    if (String(url).endsWith("/rate-limit-reset-credits")) return Response.json({
+      available_count: 1, credits: [{ id: "credit-1", reset_type: "codex_rate_limits", status: "available" }],
+    });
+    consumed = true;
+    throw new Error("A cancelled reset must not be consumed");
+  };
+  const ui = setupV2Ui("credit-1", false);
+  await ui.command("codex-reset").run();
+  assert.equal(ui.dialogs.length, 2);
+  assert.equal(consumed, false);
+});
+
+test("V2 shows an empty reset list in a dialog and reports missing usage windows", async () => {
+  globalThis.fetch = async (url) => {
+    if (String(url).endsWith("/usage")) return Response.json({ rate_limit: {} });
+    if (String(url).endsWith("/rate-limit-reset-credits")) return Response.json({ available_count: 0, credits: [] });
+    throw new Error(`Unexpected URL: ${url}`);
+  };
+  const ui = setupV2Ui();
+  await ui.command("codex-resets").run();
+  assert.equal(ui.dialogs[0].message, "No banked resets are available.");
+  await ui.command("codex-limits").run();
+  assert.match(ui.toasts.at(-1).message, /did not contain usage limit windows/);
+  assert.equal(ui.dialogs.length, 1);
+});
 
 test("shows the reset count and consumes only the selected credit after confirmation", async () => {
   const calls = [];
