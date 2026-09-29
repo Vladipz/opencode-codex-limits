@@ -1,4 +1,6 @@
 import { Plugin } from "@opencode/plugin/tui";
+import { registerStatusV2 } from "./status-v2.tsx";
+import { usageStatus } from "./usage-status.ts";
 import legacy, {
   consumeResetCredit,
   formatExpiry,
@@ -20,7 +22,9 @@ type UsageWindow = {
 function usageReport(data: any, locale: Locale): string {
   const text = messages[locale];
   if (!data.rate_limit) throw new Error(text.missingRateLimit);
-  const windows: UsageWindow[] = [data.rate_limit.primary_window, data.rate_limit.secondary_window].filter(Boolean);
+  const windows: UsageWindow[] = [data.rate_limit.primary_window, data.rate_limit.secondary_window].filter(
+    (window): window is UsageWindow => Boolean(window) && (!window.limit_window_seconds || window.limit_window_seconds < 28 * 86400),
+  );
   if (!windows.length) throw new Error(text.missingWindows);
 
   const label = (seconds?: number) => {
@@ -37,7 +41,9 @@ function usageReport(data: any, locale: Locale): string {
     : text.unknownReset;
 
   const lines = windows.map((window) => [
-    `${label(window.limit_window_seconds)}: ${window.used_percent ?? "?"}% ${text.used}`,
+    `${label(window.limit_window_seconds)}: ${typeof window.used_percent === "number"
+      ? `${Math.max(0, Math.min(100, Math.round(100 - window.used_percent)))}%`
+      : "?"} ${text.remaining}`,
     `${locale === "uk" ? "Оновиться" : "Resets"}: ${resetTime(window.reset_at)}`,
   ].join("\n"));
   const count = data.rate_limit_reset_credits?.available_count;
@@ -51,6 +57,7 @@ const v2 = Plugin.define({
     const locale = getLocale();
     const text = messages[locale];
     const toast = context.ui.toast.show;
+    const status = registerStatusV2(context, async () => usageStatus(await loadUsage(locale), locale));
     const showError = (error: unknown) => {
       const message = error instanceof Error ? error.message : String(error);
       console.error("[codex-limits]", error);
@@ -67,6 +74,28 @@ const v2 = Plugin.define({
       mode: "global",
       commands: [
         {
+          id: "codex-panel",
+          title: text.panelCommandTitle,
+          group: "Codex",
+          palette: true,
+          slash: { name: "codex-panel" },
+          run: async () => {
+            const enabled = await status.togglePanel();
+            toast({ message: enabled ? text.panelEnabled : text.panelDisabled, variant: "info" });
+          },
+        },
+        {
+          id: "codex-resets-panel",
+          title: text.resetsPanelCommandTitle,
+          group: "Codex",
+          palette: true,
+          slash: { name: "codex-resets-panel" },
+          run: async () => {
+            const enabled = await status.toggleResets();
+            toast({ message: enabled ? text.resetsPanelEnabled : text.resetsPanelDisabled, variant: "info" });
+          },
+        },
+        {
           id: "codex-limits",
           title: text.commandTitle,
           description: text.commandDescription,
@@ -77,6 +106,7 @@ const v2 = Plugin.define({
             try {
               toast({ message: text.loading, variant: "info", duration: 30000 });
               const data = await loadUsage(locale);
+              void status.refresh();
               toast({ title: text.usageTitle, message: usageReport(data, locale), variant: "success", duration: 12000 });
             } catch (error) { showError(error); }
           },
@@ -144,6 +174,7 @@ const v2 = Plugin.define({
               toast({ message: text.applyingReset, variant: "info" });
               const result = await consumeResetCredit(locale, credit.id, token);
               toast({ ...result, duration: 10000 });
+              void status.refresh();
             } catch (error) { showError(error); }
           },
         },
@@ -152,6 +183,7 @@ const v2 = Plugin.define({
         return null;
       },
     });
+    return () => status.dispose();
   },
 });
 

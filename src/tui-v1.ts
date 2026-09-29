@@ -2,8 +2,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { registerStatus } from "./status.tsx";
+import { usageStatus } from "./usage-status.ts";
 
-const OPENAI_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
 const API_BASE = "https://chatgpt.com/backend-api/wham";
 
 export type ResetCredit = {
@@ -22,8 +23,7 @@ export const messages = {
   en: {
     missingAuth: "Could not find OpenCode/Codex auth.json.",
     missingAccessToken: (authPath: string) => `Access token not found in ${authPath}.`,
-    tokenRefreshFailed: (status: number, body: string) =>
-      `Token refresh failed (${status}): ${body}`,
+    sessionExpired: "OpenAI session expired. Reconnect OpenAI in OpenCode.",
     usageRequestFailed: (status: number) => `Usage API request failed (${status}).`,
     missingRateLimit: "The API response did not contain rate_limit.",
     missingWindows: "The API response did not contain usage limit windows.",
@@ -52,17 +52,23 @@ export const messages = {
     applyingReset: "Applying Codex reset...",
     unknownReset: "unknown",
     used: "used",
+    remaining: "remaining",
     resets: "resets",
     commandTitle: "Check Codex Limits",
     commandDescription: "Show current Codex usage limits",
+    panelCommandTitle: "Toggle Codex usage panel",
+    resetsPanelCommandTitle: "Toggle reset count in panel",
+    panelEnabled: "Codex usage panel enabled.",
+    panelDisabled: "Codex usage panel hidden.",
+    resetsPanelEnabled: "Reset count shown in Codex panel.",
+    resetsPanelDisabled: "Reset count hidden from Codex panel.",
     loading: "Fetching Codex usage limits...",
     error: (message: string) => `Codex limits error: ${message}`,
   },
   uk: {
     missingAuth: "Не знайдено auth.json OpenCode/Codex.",
     missingAccessToken: (authPath: string) => `Не знайдено токен доступу у ${authPath}.`,
-    tokenRefreshFailed: (status: number, body: string) =>
-      `Не вдалося оновити токен (${status}): ${body}`,
+    sessionExpired: "Сеанс OpenAI закінчився. Підключіть OpenAI в OpenCode повторно.",
     usageRequestFailed: (status: number) => `Помилка запиту до API лімітів (${status}).`,
     missingRateLimit: "У відповіді API немає rate_limit.",
     missingWindows: "У відповіді API немає вікон лімітів використання.",
@@ -91,9 +97,16 @@ export const messages = {
     applyingReset: "Скидання лімітів Codex...",
     unknownReset: "невідомо",
     used: "використано",
+    remaining: "залишилось",
     resets: "скидання",
     commandTitle: "Перевірити ліміти Codex",
     commandDescription: "Показати поточні ліміти використання Codex",
+    panelCommandTitle: "Увімкнути або вимкнути панель лімітів Codex",
+    resetsPanelCommandTitle: "Увімкнути або вимкнути кількість скидань у панелі",
+    panelEnabled: "Панель лімітів Codex увімкнено.",
+    panelDisabled: "Панель лімітів Codex приховано.",
+    resetsPanelEnabled: "Кількість скидань показується в панелі Codex.",
+    resetsPanelDisabled: "Кількість скидань приховано з панелі Codex.",
     loading: "Отримання лімітів Codex...",
     error: (message: string) => `Помилка лімітів Codex: ${message}`,
   },
@@ -164,7 +177,7 @@ export async function getValidToken(locale: Locale): Promise<string> {
 
   const openai = auth.openai ?? auth.tokens ?? auth;
 
-  let token = openai.access ?? openai.access_token;
+  const token = openai.access ?? openai.access_token;
 
   if (!token) {
     throw new Error(text.missingAccessToken(authPath));
@@ -172,45 +185,8 @@ export async function getValidToken(locale: Locale): Promise<string> {
 
   const expires = openai.expires;
 
-  const isExpiring =
-    typeof expires === "number" && expires - Date.now() < 5 * 60 * 1000;
-
-  const refreshToken = openai.refresh ?? openai.refresh_token;
-
-  if (isExpiring && refreshToken) {
-    const response = await fetch("https://auth.openai.com/oauth/token", {
-      method: "POST",
-
-      headers: {
-        "Content-Type": "application/json",
-      },
-
-      body: JSON.stringify({
-        grant_type: "refresh_token",
-        refresh_token: refreshToken,
-        client_id: OPENAI_CLIENT_ID,
-      }),
-    });
-
-    if (!response.ok) {
-      const body = await response.text();
-
-      throw new Error(text.tokenRefreshFailed(response.status, body));
-    }
-
-    const data: any = await response.json();
-
-    token = data.access_token;
-
-    openai.access = data.access_token;
-
-    if (data.refresh_token) {
-      openai.refresh = data.refresh_token;
-    }
-
-    openai.expires = Date.now() + (data.expires_in ?? 3600) * 1000;
-
-    fs.writeFileSync(authPath, JSON.stringify(auth, null, 2), "utf-8");
+  if (typeof expires === "number" && expires <= Date.now()) {
+    throw new Error(text.sessionExpired);
   }
 
   return token;
@@ -308,7 +284,7 @@ export async function loadCodexLimits(locale: Locale): Promise<string> {
   }
 
   const windows = [rateLimit.primary_window, rateLimit.secondary_window].filter(
-    Boolean,
+    (window: any) => window && (!window.limit_window_seconds || window.limit_window_seconds < 28 * 86400),
   );
 
   if (windows.length === 0) {
@@ -332,8 +308,10 @@ export async function loadCodexLimits(locale: Locale): Promise<string> {
   };
 
   const formatWindow = (window: any) => {
-    const used =
-      window.used_percent !== undefined ? `${window.used_percent}%` : "?";
+    const used = window.used_percent;
+    const remaining = typeof used === "number" && Number.isFinite(used)
+      ? `${Math.max(0, Math.min(100, Math.round(100 - used)))}%`
+      : "?";
 
     const seconds = window.limit_window_seconds;
 
@@ -353,7 +331,7 @@ export async function loadCodexLimits(locale: Locale): Promise<string> {
       }
     }
 
-    return `${name}: ${used} ${text.used}, ${text.resets} ${formatReset(window.reset_at)}`;
+    return `${name}: ${remaining} ${text.remaining}, ${text.resets} ${formatReset(window.reset_at)}`;
   };
 
   const count = data.rate_limit_reset_credits?.available_count;
@@ -366,9 +344,13 @@ export async function loadCodexLimits(locale: Locale): Promise<string> {
 const plugin = {
   id: "local.codex-limits",
 
-  async tui(api: any) {
+  async tui(api: any, options?: { showPanel?: boolean; showResets?: boolean }) {
     const locale = getLocale();
     const text = messages[locale];
+    const status = registerStatus(api, async () => usageStatus(await loadUsage(locale), locale), {
+      showPanel: options?.showPanel !== false,
+      showResets: options?.showResets === true,
+    });
     const showError = (error: unknown) => {
       const message = error instanceof Error ? error.message : String(error);
       console.error("[codex-limits]", error);
@@ -383,6 +365,28 @@ const plugin = {
 
     const dispose = api.keymap.registerLayer({
       commands: [
+        {
+          namespace: "palette",
+          name: "codex-panel",
+          title: text.panelCommandTitle,
+          category: "Codex",
+          slashName: "codex-panel",
+          run: () => {
+            const enabled = status.togglePanel();
+            api.ui.toast({ message: enabled ? text.panelEnabled : text.panelDisabled, variant: "info" });
+          },
+        },
+        {
+          namespace: "palette",
+          name: "codex-resets-panel",
+          title: text.resetsPanelCommandTitle,
+          category: "Codex",
+          slashName: "codex-resets-panel",
+          run: () => {
+            const enabled = status.toggleResets();
+            api.ui.toast({ message: enabled ? text.resetsPanelEnabled : text.resetsPanelDisabled, variant: "info" });
+          },
+        },
         {
           namespace: "palette",
 
@@ -405,6 +409,7 @@ const plugin = {
               });
 
               const message = await loadCodexLimits(locale);
+              void status.refresh();
 
               api.ui.toast({
                 title: text.usageTitle,
@@ -481,7 +486,10 @@ const plugin = {
                       api.ui.dialog.clear();
                       api.ui.toast({ message: text.applyingReset, variant: "info" });
                       consumeResetCredit(locale, credit.id, token)
-                        .then(({ message, variant }) => api.ui.toast({ message, variant, duration: 10000 }))
+                        .then(({ message, variant }) => {
+                          api.ui.toast({ message, variant, duration: 10000 });
+                          void status.refresh();
+                        })
                         .catch(showError);
                     },
                   }));
