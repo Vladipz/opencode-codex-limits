@@ -1,5 +1,5 @@
 /** @jsxImportSource @opentui/solid */
-import { createSignal } from "solid-js";
+import { createEffect, createSignal } from "solid-js";
 import type { UsageStatus } from "./status.tsx";
 
 export function registerStatusV2(
@@ -16,9 +16,10 @@ export function registerStatusV2(
   const [error, setError] = createSignal<string>();
   let busy = false;
   let disposed = false;
+  const isOpenAIModel = () => context.ui.model.current()?.providerID === "openai";
 
   const refresh = async () => {
-    if (disposed || busy || !settings.showPanel) return;
+    if (disposed || busy || !settings.showPanel || !isOpenAIModel()) return;
     busy = true;
     try {
       const result = await load();
@@ -42,7 +43,7 @@ export function registerStatusV2(
 
   const removeSlot = context.ui.slot({
     append: "sidebar.content",
-    render: () => settings.showPanel ? (
+    render: () => settings.showPanel && isOpenAIModel() ? (
       <box flexDirection="column" width="100%" paddingTop={1}>
         <text>Usage remaining</text>
         {(usage()?.windows ?? []).map((window) => (
@@ -60,8 +61,11 @@ export function registerStatusV2(
     ) : null,
   });
 
-  if (settings.showPanel) void refresh();
+  createEffect(() => {
+    if (settings.showPanel && isOpenAIModel()) void refresh();
+  });
   const timer = setInterval(() => void refresh(), 60_000);
+  timer.unref?.();
   const stopSession = context.data.on("session.updated", () => void refresh());
 
   return {

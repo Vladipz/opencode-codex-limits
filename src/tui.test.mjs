@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import plugin from "./tui.ts";
 import server from "./index.ts";
+import { registerStatusV2 } from "./status-v2.tsx";
 
 const originalHome = process.env.HOME;
 const originalUserProfile = process.env.USERPROFILE;
@@ -51,9 +52,18 @@ function setupV2Ui(selection = "credit-2", confirmed = true) {
   const toasts = [];
   const dialogs = [];
   plugin.setup({
+    options: {},
+    storage: {
+      store: (_name, { initial }) => {
+        const settings = { ...initial, showPanel: false };
+        return [settings, async (update) => update(settings)];
+      },
+    },
+    data: { on: () => () => {} },
     keymap: { layer: (register) => { layer = register(); } },
     ui: {
       slot: ({ render }) => render(),
+      model: { current: () => ({ providerID: "openai", modelID: "codex" }) },
       toast: { show: (toast) => toasts.push(toast) },
       dialog: {
         alert: async (input) => { dialogs.push(input); },
@@ -64,6 +74,43 @@ function setupV2Ui(selection = "credit-2", confirmed = true) {
   });
   return { toasts, dialogs, command: (id) => layer.commands.find((command) => command.id === id) };
 }
+
+test("hides the status panel and skips refreshes for non-OpenAI models", async () => {
+  const setupStatus = (providerID) => {
+    let sidebar;
+    let loads = 0;
+    const status = registerStatusV2({
+      options: {},
+      storage: {
+        store: (_name, { initial }) => [initial, async (update) => update(initial)],
+      },
+      data: { on: () => () => {} },
+      theme: { text: { base: "white" } },
+      ui: {
+        model: { current: () => ({ providerID, modelID: "test" }) },
+        slot: (claim) => {
+          if (claim.append === "sidebar.content") sidebar = claim.render;
+          return () => {};
+        },
+      },
+    }, async () => {
+      loads += 1;
+      return { windows: [] };
+    });
+    return { sidebar, status, loads: () => loads };
+  };
+
+  const nonOpenAI = setupStatus("anthropic");
+  assert.equal(nonOpenAI.sidebar(), null);
+  await nonOpenAI.status.refresh();
+  assert.equal(nonOpenAI.loads(), 0);
+  nonOpenAI.status.dispose();
+
+  const openAI = setupStatus("openai");
+  await openAI.status.refresh();
+  assert.equal(openAI.loads(), 1);
+  openAI.status.dispose();
+});
 
 test("exposes the V2 server and TUI entrypoints alongside the V1 TUI hook", () => {
   assert.equal(typeof server.setup, "function");
@@ -104,7 +151,7 @@ test("V2 registers all commands and confirms a selected reset before consuming i
   assert.equal(ui.toasts[0].message, "Fetching Codex usage limits...");
   assert.equal(ui.toasts[0].duration, 30000);
   assert.equal(ui.toasts[1].title, "Codex usage");
-  assert.match(ui.toasts[1].message, /^5 hours: 95% used\nResets: .+\n\n7 days: 6% used\nResets: .+\n\n2 resets available$/);
+  assert.match(ui.toasts[1].message, /^5 hours: 5% remaining\nResets: .+\n\n7 days: 94% remaining\nResets: .+\n\n2 resets available$/);
   assert.equal(ui.dialogs.length, 0);
   await ui.command("codex-resets").run();
   assert.equal(ui.toasts[2].message, "Fetching Codex resets...");

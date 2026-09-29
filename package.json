@@ -5,8 +5,8 @@
   "type": "module",
   "license": "MIT",
   "scripts": {
-    "test": "node --test src/tui.test.mjs",
-    "typecheck": "tsc --noEmit --jsx preserve --module nodenext --moduleResolution nodenext --target es2022 --allowImportingTsExtensions --skipLibCheck --types node src/index.ts src/tui.ts"
+    "test": "tsx --test --test-force-exit src/tui.test.mjs",
+    "typecheck": "tsc -p tsconfig.json"
   },
   "exports": {
     ".": "./src/index.ts",
@@ -30,7 +30,10 @@
     "plugin"
   ],
   "devDependencies": {
+    "@opentui/core": ">=0.5.12",
+    "@opentui/solid": ">=0.5.12",
     "@types/node": "^24.19.0",
+    "tsx": "^4.21.0",
     "typescript": "^5.9.3"
   }
 }
