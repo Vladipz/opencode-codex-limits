@@ -1,4 +1,3 @@
-import { Plugin } from "@opencode/plugin/tui";
 import { registerStatusV2 } from "./status-v2.tsx";
 import { usageStatus } from "./usage-status.ts";
 import legacy, {
@@ -51,7 +50,7 @@ function usageReport(data: any, locale: Locale): string {
   return lines.join("\n\n");
 }
 
-const v2 = Plugin.define({
+const v2 = {
   id: "local.codex-limits.cli",
   setup(context) {
     const locale = getLocale();
@@ -185,7 +184,7 @@ const v2 = Plugin.define({
     });
     return () => status.dispose();
   },
-});
+};
 
 // V1 invokes tui(api); V2 invokes setup(context). Neither API is translated into the other.
 export default { ...v2, tui: legacy.tui };
