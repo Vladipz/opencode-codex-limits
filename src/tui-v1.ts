@@ -3,7 +3,9 @@ import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { registerStatus } from "./status.tsx";
-import { usageStatus } from "./usage-status.ts";
+import { loadStatus } from "./status-loader.ts";
+import { displayText, validDisplayMode, validTimeFormat } from "./display.ts";
+import { openSettings } from "./settings-menu.tsx";
 
 const API_BASE = "https://chatgpt.com/backend-api/wham";
 
@@ -57,11 +59,8 @@ export const messages = {
     commandTitle: "Check Codex Limits",
     commandDescription: "Show current Codex usage limits",
     panelCommandTitle: "Toggle Codex usage panel",
-    resetsPanelCommandTitle: "Toggle reset count in panel",
     panelEnabled: "Codex usage panel enabled.",
     panelDisabled: "Codex usage panel hidden.",
-    resetsPanelEnabled: "Reset count shown in Codex panel.",
-    resetsPanelDisabled: "Reset count hidden from Codex panel.",
     loading: "Fetching Codex usage limits...",
     error: (message: string) => `Codex limits error: ${message}`,
   },
@@ -102,11 +101,8 @@ export const messages = {
     commandTitle: "Перевірити ліміти Codex",
     commandDescription: "Показати поточні ліміти використання Codex",
     panelCommandTitle: "Увімкнути або вимкнути панель лімітів Codex",
-    resetsPanelCommandTitle: "Увімкнути або вимкнути кількість скидань у панелі",
     panelEnabled: "Панель лімітів Codex увімкнено.",
     panelDisabled: "Панель лімітів Codex приховано.",
-    resetsPanelEnabled: "Кількість скидань показується в панелі Codex.",
-    resetsPanelDisabled: "Кількість скидань приховано з панелі Codex.",
     loading: "Отримання лімітів Codex...",
     error: (message: string) => `Помилка лімітів Codex: ${message}`,
   },
@@ -344,13 +340,16 @@ export async function loadCodexLimits(locale: Locale): Promise<string> {
 const plugin = {
   id: "local.codex-limits",
 
-  async tui(api: any, options?: { showPanel?: boolean; showResets?: boolean }) {
+  async tui(api: any, options?: { showPanel?: boolean; showResets?: boolean; showResetExpiry?: boolean; displayMode?: string; timeFormat?: string }) {
     const locale = getLocale();
     const text = messages[locale];
-    const status = registerStatus(api, async () => usageStatus(await loadUsage(locale), locale), {
+    const status = registerStatus(api, () => loadStatus(locale, () => loadUsage(locale), () => loadResetCredits(locale)), {
+      displayMode: validDisplayMode(options?.displayMode),
       showPanel: options?.showPanel !== false,
       showResets: options?.showResets === true,
-    });
+      showResetExpiry: options?.showResetExpiry !== false,
+      timeFormat: validTimeFormat(options?.timeFormat),
+    }, locale);
     const showError = (error: unknown) => {
       const message = error instanceof Error ? error.message : String(error);
       console.error("[codex-limits]", error);
@@ -367,24 +366,24 @@ const plugin = {
       commands: [
         {
           namespace: "palette",
+          name: "codex-settings",
+          title: displayText[locale].settings,
+          category: "Codex",
+          slashName: "codex-settings",
+          run: () => openSettings(status, locale, {
+            show: (render, onClose) => api.ui.dialog.replace(render, onClose),
+            clear: () => api.ui.dialog.clear(),
+          }, status.colors, showError),
+        },
+        {
+          namespace: "palette",
           name: "codex-panel",
           title: text.panelCommandTitle,
           category: "Codex",
           slashName: "codex-panel",
-          run: () => {
-            const enabled = status.togglePanel();
+          run: async () => {
+            const enabled = await status.togglePanel();
             api.ui.toast({ message: enabled ? text.panelEnabled : text.panelDisabled, variant: "info" });
-          },
-        },
-        {
-          namespace: "palette",
-          name: "codex-resets-panel",
-          title: text.resetsPanelCommandTitle,
-          category: "Codex",
-          slashName: "codex-resets-panel",
-          run: () => {
-            const enabled = status.toggleResets();
-            api.ui.toast({ message: enabled ? text.resetsPanelEnabled : text.resetsPanelDisabled, variant: "info" });
           },
         },
         {

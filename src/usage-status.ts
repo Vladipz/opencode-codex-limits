@@ -20,9 +20,8 @@ export function usageStatus(data: any, locale: "en" | "uk"): UsageStatus {
       const remainingPercent = typeof used === "number" && Number.isFinite(used)
         ? Math.max(0, Math.min(100, Math.round(100 - used)))
         : undefined;
-      const resetDate = Number(window.reset_at)
-        ? new Date(Number(window.reset_at) * 1000)
-        : undefined;
+      const timestamp = Number(window.reset_at);
+      const resetDate = Number.isFinite(timestamp) && timestamp > 0 ? new Date(timestamp * 1000) : undefined;
       const reset = resetDate && !Number.isNaN(resetDate.valueOf())
         ? resetDate.toLocaleString(locale === "uk" ? "uk-UA" : "en-US", {
             day: "numeric",
@@ -37,6 +36,7 @@ export function usageStatus(data: any, locale: "en" | "uk"): UsageStatus {
         remaining: remainingPercent === undefined ? "?" : `${remainingPercent}%`,
         remainingPercent,
         reset,
+        resetAt: resetDate && Number.isFinite(resetDate.valueOf()) ? resetDate.valueOf() : undefined,
       };
     }),
     resets: typeof data.rate_limit_reset_credits?.available_count === "number"

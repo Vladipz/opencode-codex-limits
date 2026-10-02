@@ -1,5 +1,7 @@
 import { registerStatusV2 } from "./status-v2.tsx";
-import { usageStatus } from "./usage-status.ts";
+import { displayText } from "./display.ts";
+import { loadStatus } from "./status-loader.ts";
+import { openSettings } from "./settings-menu.tsx";
 import legacy, {
   consumeResetCredit,
   formatExpiry,
@@ -56,7 +58,8 @@ const v2 = {
     const locale = getLocale();
     const text = messages[locale];
     const toast = context.ui.toast.show;
-    const status = registerStatusV2(context, async () => usageStatus(await loadUsage(locale), locale));
+    const status = registerStatusV2(context, () => loadStatus(locale, () => loadUsage(locale), () => loadResetCredits(locale)), locale);
+    const labels = displayText[locale];
     const showError = (error: unknown) => {
       const message = error instanceof Error ? error.message : String(error);
       console.error("[codex-limits]", error);
@@ -73,26 +76,12 @@ const v2 = {
       mode: "global",
       commands: [
         {
-          id: "codex-panel",
-          title: text.panelCommandTitle,
+          id: "codex-settings",
+          title: labels.settings,
           group: "Codex",
           palette: true,
-          slash: { name: "codex-panel" },
-          run: async () => {
-            const enabled = await status.togglePanel();
-            toast({ message: enabled ? text.panelEnabled : text.panelDisabled, variant: "info" });
-          },
-        },
-        {
-          id: "codex-resets-panel",
-          title: text.resetsPanelCommandTitle,
-          group: "Codex",
-          palette: true,
-          slash: { name: "codex-resets-panel" },
-          run: async () => {
-            const enabled = await status.toggleResets();
-            toast({ message: enabled ? text.resetsPanelEnabled : text.resetsPanelDisabled, variant: "info" });
-          },
+          slash: { name: "codex-settings" },
+          run: () => openSettings(status, locale, context.ui.dialog, status.colors, showError),
         },
         {
           id: "codex-limits",
