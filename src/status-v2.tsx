@@ -1,91 +1,42 @@
 /** @jsxImportSource @opentui/solid */
-import { createEffect, createSignal } from "solid-js";
+import { validDisplayMode, validTimeFormat, type DisplaySettings } from "./display.ts";
+import { createStatusController } from "./status-controller.ts";
+import { StatusView } from "./status-view.tsx";
 import type { UsageStatus } from "./status.tsx";
 
-export function registerStatusV2(
-  context: any,
-  load: () => Promise<UsageStatus>,
-) {
+export function registerStatusV2(context: any, load: () => Promise<UsageStatus>, locale: "en" | "uk" = "en") {
   const [settings, updateSettings] = context.storage.store("codex-limits.display", {
     initial: {
+      displayMode: validDisplayMode(context.options?.displayMode),
       showPanel: context.options?.showPanel !== false,
       showResets: context.options?.showResets === true,
+      showResetExpiry: context.options?.showResetExpiry !== false,
+      timeFormat: validTimeFormat(context.options?.timeFormat) ?? "absolute",
     },
   });
-  const [usage, setUsage] = createSignal<UsageStatus>();
-  const [error, setError] = createSignal<string>();
-  let busy = false;
-  let disposed = false;
-  const isOpenAIModel = () => context.ui.model.current()?.providerID === "openai";
-
-  const refresh = async () => {
-    if (disposed || busy || !settings.showPanel || !isOpenAIModel()) return;
-    busy = true;
-    try {
-      const result = await load();
-      if (!disposed) {
-        setUsage(result);
-        setError(undefined);
-      }
-    } catch (cause) {
-      if (!disposed) {
-        setUsage(undefined);
-        setError(cause instanceof Error ? cause.message : String(cause));
-      }
-    } finally {
-      busy = false;
-    }
-  };
-
-  const color = (remaining?: number) => remaining === undefined
-    ? context.theme.text.base
-    : remaining < 20 ? "#f44336" : remaining < 50 ? "#ffb300" : "#00c853";
-
-  const removeSlot = context.ui.slot({
+  const status = createStatusController({
+    settings: () => ({ ...settings, showResetExpiry: settings.showResetExpiry ?? (context.options?.showResetExpiry !== false),
+      timeFormat: validTimeFormat(settings.timeFormat) ?? validTimeFormat(context.options?.timeFormat) ?? "absolute" }),
+    save: (next) => updateSettings((draft: DisplaySettings) => { Object.assign(draft, next); }),
+    modes: ["panel", "compact-sidebar", "compact-footer", "hidden"],
+    active: () => context.ui.model.current()?.providerID === "openai",
+    subscribe: (refresh) => context.data.on("session.updated", refresh),
+  }, load);
+  const colors = () => ({ text: context.theme.text.base, muted: context.theme.text.base,
+    error: "#f44336", warning: "#ffb300", success: "#00c853" });
+  const removeSidebar = context.ui.slot({
     append: "sidebar.content",
-    render: () => settings.showPanel && isOpenAIModel() ? (
-      <box flexDirection="column" width="100%" paddingTop={1}>
-        <text>Usage remaining</text>
-        {(usage()?.windows ?? []).map((window) => (
-          <box flexDirection="row" width="100%">
-            <text width={10}>{window.label}</text>
-            <text width={6} fg={color(window.remainingPercent)}>{window.remaining}</text>
-            <text fg={context.theme.text.base}>{window.reset}</text>
-          </box>
-        ))}
-        {settings.showResets && usage()?.resets !== undefined && (
-          <text>Resets available: {usage()?.resets}</text>
-        )}
-        {!usage() && <text>{error() ?? "Loading limits..."}</text>}
-      </box>
-    ) : null,
+    render: () => status.visible() && status.mode() !== "compact-footer"
+      ? <StatusView status={status} locale={locale} colors={colors} compact={status.mode() === "compact-sidebar"} /> : null,
   });
-
-  createEffect(() => {
-    if (settings.showPanel && isOpenAIModel()) void refresh();
+  const removeFooter = context.ui.slot({
+    append: "prompt.footer",
+    render: () => status.visible() && status.mode() === "compact-footer"
+      ? <StatusView status={status} locale={locale} colors={colors} compact /> : null,
   });
-  const timer = setInterval(() => void refresh(), 60_000);
-  timer.unref?.();
-  const stopSession = context.data.on("session.updated", () => void refresh());
-
-  return {
-    refresh,
-    togglePanel: async () => {
-      const next = !settings.showPanel;
-      await updateSettings((draft: any) => { draft.showPanel = next; });
-      if (next) void refresh();
-      return next;
-    },
-    toggleResets: async () => {
-      const next = !settings.showResets;
-      await updateSettings((draft: any) => { draft.showResets = next; });
-      return next;
-    },
-    dispose: () => {
-      disposed = true;
-      clearInterval(timer);
-      stopSession();
-      if (typeof removeSlot === "function") removeSlot();
-    },
-  };
+  return { ...status, colors, dispose: () => {
+    status.dispose();
+    if (typeof removeSidebar === "function") removeSidebar();
+    if (typeof removeFooter === "function") removeFooter();
+  } };
 }

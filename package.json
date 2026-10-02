@@ -6,6 +6,7 @@
   "license": "MIT",
   "scripts": {
     "test": "tsx --test --test-force-exit src/tui.test.mjs",
+    "test:ui": "bun test --preload @opentui/solid/preload ./test/ui.test.tsx",
     "typecheck": "tsc -p tsconfig.json"
   },
   "exports": {
