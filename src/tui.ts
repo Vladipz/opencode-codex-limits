@@ -68,7 +68,12 @@ const v2 = {
     const locale = getLocale();
     const text = messages[locale];
     const toast = context.ui.toast.show;
-    const rpc = context.client.rpc(codexRpc) as any;
+    const rpc = context.client.rpc(codexRpc) as {
+      identity: (input: {}) => Promise<{ email?: string }>;
+      usage: (input: {}) => Promise<any>;
+      credits: (input: {}) => Promise<{ available_count: number; credits: ResetCredit[] }>;
+      consume: (input: { creditId: string; requestId: string }) => Promise<{ code: string }>;
+    };
     const [emailSettings, updateEmailSettings] = context.storage.store("codex-limits.usage-email.v2", {
       initial: { showEmail: true },
     });
@@ -157,24 +162,6 @@ const v2 = {
       mode: "global",
       commands: [
         {
-          id: "codex-account-emails",
-          title: "Toggle active email in the usage panel",
-          group: "Codex",
-          palette: true,
-          slash: { name: "codex-account-emails" },
-          run: async () => {
-            const next = !showEmail();
-            updateEmailState((draft: { showEmail: boolean }) => { draft.showEmail = next; });
-            toast({ message: next ? "Usage email shown" : "Usage email hidden", variant: "info" });
-            const save = pendingEmailSettings.then(() =>
-              updateEmailSettings((draft: { showEmail: boolean }) => { draft.showEmail = next; }));
-            pendingEmailSettings = save.catch(() => {});
-            try {
-              await Promise.all([save, next && !accountEmail() ? loadIdentity() : Promise.resolve()]);
-            } catch (error) { showError(error); }
-          },
-        },
-        {
           id: "codex-reconnect",
           title: "Reconnect OpenAI provider",
           group: "Codex",
@@ -188,7 +175,23 @@ const v2 = {
           group: "Codex",
           palette: true,
           slash: { name: "codex-settings" },
-          run: () => openSettings(status, locale, context.ui.dialog, status.colors, showError),
+          run: () => openSettings(status, locale, context.ui.dialog, status.colors, showError, {
+            enabled: showEmail,
+            toggle: async () => {
+              const previous = showEmail();
+              const next = !previous;
+              updateEmailState((draft: { showEmail: boolean }) => { draft.showEmail = next; });
+              const save = pendingEmailSettings.then(() =>
+                updateEmailSettings((draft: { showEmail: boolean }) => { draft.showEmail = next; }));
+              pendingEmailSettings = save.catch(() => {});
+              try { await save; }
+              catch (error) {
+                updateEmailState((draft: { showEmail: boolean }) => { draft.showEmail = previous; });
+                throw error;
+              }
+              if (next && !accountEmail()) await loadIdentity();
+            },
+          }),
         },
         {
           id: "codex-limits",

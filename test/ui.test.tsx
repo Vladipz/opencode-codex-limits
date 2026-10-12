@@ -43,8 +43,11 @@ for (const displayMode of ["panel", "compact-sidebar", "compact-footer"]) test(`
       } },
       data: { on: () => () => {} },
       theme: { text: { base: "white" } },
-      keymap: { layer: (register: () => { commands: { id: string; run: () => Promise<void> }[] }) => {
-        toggle = register().commands.find((command) => command.id === "codex-account-emails")!.run;
+      keymap: { layer: (register: () => { commands: { id: string; run: () => any }[] }) => {
+        const commands = register().commands;
+        assert.equal(commands.find((command) => command.id === "codex-account-emails"), undefined);
+        const menu = commands.find((command) => command.id === "codex-settings")!.run();
+        toggle = () => menu.activate(1, 4);
       } },
       ui: {
         slot: ({ append, render }: { append: string; render: () => unknown }) => {
@@ -54,6 +57,7 @@ for (const displayMode of ["panel", "compact-sidebar", "compact-footer"]) test(`
         },
         model: { current: () => ({ providerID: "openai" }) },
         toast: { show: () => {} },
+        dialog: { show: () => {}, clear: () => {} },
       },
     });
     return sidebar();
@@ -65,16 +69,16 @@ for (const displayMode of ["panel", "compact-sidebar", "compact-footer"]) test(`
     const hide = toggle();
     await ui.flush();
     assert.doesNotMatch(ui.captureCharFrame(), /account@example.com/);
-    const show = toggle();
+    assert.deepEqual(saved, []);
+    releaseSave();
+    await hide;
+    await toggle();
     await ui.flush();
     assert.match(ui.captureCharFrame(), /account@example.com/);
     assert.equal(identityCalls, initialCalls);
-    const hideAgain = toggle();
+    await toggle();
     await ui.flush();
     assert.doesNotMatch(ui.captureCharFrame(), /account@example.com/);
-    assert.deepEqual(saved, []);
-    releaseSave();
-    await Promise.all([hide, show, hideAgain]);
     assert.deepEqual(saved, [false, true, false]);
     assert.equal(ui.renderer.root.getChildren()[0], mounted);
   } finally { releaseSave(); dispose(); ui.renderer.destroy(); }
@@ -85,13 +89,18 @@ for (const version of [1, 2]) test(`V${version} rendered menu retains its mounte
   let status;
   let menu;
   let closed = 0;
+  let showEmail;
   render(() => {
+    const [emailEnabled, setEmailEnabled] = createSignal(true);
+    showEmail = emailEnabled;
     const [settings, save] = createSignal<DisplaySettings>({ showPanel: false, showResets: false, showResetExpiry: true });
     status = createStatusController({ settings, save: (next) => { save(next); },
       modes: version === 1 ? ["panel", "compact-sidebar", "hidden"] : ["panel", "compact-sidebar", "compact-footer", "hidden"],
       active: () => false, subscribe: () => undefined,
     }, async () => ({ windows: [] }));
-    menu = createSettingsMenu(status, "en", () => { closed += 1; }, (error) => { throw error; });
+    menu = createSettingsMenu(status, "en", () => { closed += 1; }, (error) => { throw error; }, {
+      enabled: emailEnabled, toggle: async () => { setEmailEnabled((value) => !value); },
+    });
     return <SettingsDialog menu={menu} locale="en" colors={colors} />;
   }, ui.renderer);
   try {
@@ -116,7 +125,14 @@ for (const version of [1, 2]) test(`V${version} rendered menu retains its mounte
     await ui.flush();
     assert.equal(menu.selected(), 3);
     assert.match(ui.captureCharFrame(), /› Time format Countdown/);
+    ui.mockInput.pressArrow("down");
+    ui.mockInput.pressEnter();
+    await ui.waitFor(() => !showEmail());
+    await ui.flush();
+    assert.equal(menu.selected(), 4);
+    assert.match(ui.captureCharFrame(), /› Show account email Off/);
     assert.equal(ui.renderer.root.getChildren()[0], mounted);
+    ui.mockInput.pressArrow("up");
     ui.mockInput.pressArrow("up");
     ui.mockInput.pressArrow("up");
     ui.mockInput.pressArrow("up");

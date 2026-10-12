@@ -11,6 +11,7 @@ import { createSettingsMenu } from "./settings-menu.tsx";
 import { loadStatus } from "./status-loader.ts";
 import { availableResetExpiries, compactResetText, displayMode, formatLimitReset, resetDisplay, timeFormat } from "./display.ts";
 import { usageStatus } from "./usage-status.ts";
+import { loadUsage } from "./tui-v1.ts";
 
 const originalHome = process.env.HOME;
 const originalUserProfile = process.env.USERPROFILE;
@@ -52,17 +53,40 @@ function setupUi() {
   return { api, toasts, command: (name) => commands.find((item) => item.name === name), getDialog: () => dialog };
 }
 
-function setupV2Ui(selection = "credit-2", confirmed = true) {
+function setupV2Ui(selection = "credit-2", confirmed = true, stores = new Map()) {
   let layer;
   const toasts = [];
   const dialogs = [];
   let settings;
   const dispose = plugin.setup({
     options: {},
+    client: { rpc: () => {
+      const request = async (pathname, init = {}) => {
+        const response = await globalThis.fetch(`https://chatgpt.com/backend-api/wham${pathname}`, {
+          ...init, headers: { Authorization: "Bearer test-token" },
+        });
+        if (!response.ok) throw new Error(`OpenAI usage request failed (${response.status}).`);
+        return response.json();
+      };
+      return {
+        identity: async () => ({ email: "active@example.com" }),
+        usage: () => request("/usage"),
+        credits: () => request("/rate-limit-reset-credits"),
+        consume: ({ creditId, requestId }) => request("/rate-limit-reset-credits/consume", {
+          method: "POST", body: JSON.stringify({ credit_id: creditId, redeem_request_id: requestId }),
+        }),
+      };
+    } },
     storage: {
-      store: (_name, { initial }) => {
-        settings = { ...initial, showPanel: false };
-        return [settings, async (update) => update(settings)];
+      store: (name, { initial }) => {
+        if (!stores.has(name)) stores.set(name, { ...initial, ...(name === "codex-limits.display" ? { showPanel: false } : {}) });
+        const value = stores.get(name);
+        if (name === "codex-limits.display") settings = value;
+        return [value, async (update) => update(value)];
+      },
+      memory: (_name, { initial }) => {
+        const value = { ...initial };
+        return [value, (update) => update(value)];
       },
     },
     data: { on: () => () => {} },
@@ -212,6 +236,28 @@ test("V2 settings stay in one dialog and retain focus without a separate reset-c
   ui.dispose();
 });
 
+test("V2 email visibility lives in settings, preserves saved choices and persists across restarts", async () => {
+  const stores = new Map([["codex-limits.usage-email.v2", { showEmail: false }]]);
+  const ui = setupV2Ui("credit-2", true, stores);
+  try {
+    assert.equal(ui.command("codex-account-emails"), undefined);
+    const menu = ui.command("codex-settings").run();
+    assert.equal(menu.rows()[4].title, "Show account email");
+    assert.equal(menu.rows()[4].description, "Off");
+    await menu.activate(1, 4);
+    assert.equal(menu.selected(), 4);
+    assert.equal(menu.rows()[4].description, "On");
+    assert.equal(stores.get("codex-limits.usage-email.v2").showEmail, true);
+    await menu.activate(-1, 4);
+    assert.equal(menu.rows()[4].description, "Off");
+    assert.equal(ui.dialogs.length, 1);
+  } finally { ui.dispose(); }
+  const restarted = setupV2Ui("credit-2", true, stores);
+  try {
+    assert.equal(restarted.command("codex-settings").run().rows()[4].description, "Off");
+  } finally { restarted.dispose(); }
+});
+
 test("V1 offers all supported settings, migrates legacy keys and persists separate switches", async () => {
   const saved = new Map([["codex-limits.showPanel", false], ["codex-limits.showResets", true]]);
   const cleanup = [];
@@ -258,11 +304,79 @@ test("V1 offers all supported settings, migrates legacy keys and persists separa
   assert.equal(restarted.getSettings().showResets, false);
   assert.equal(restarted.getSettings().timeFormat, "countdown");
   restarted.dispose();
-  assert.equal(unsubscribed, 2);
+  assert.equal(unsubscribed, 6);
+});
+
+test("V1 refreshes on reply completion and every minute, and stops after disposal", async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  const handlers = new Map();
+  const defaults = { showPanel: true, showResets: false };
+  let loads = 0;
+  const status = registerStatus({ event: { on: (type, handler) => {
+    handlers.set(type, handler);
+    return () => handlers.delete(type);
+  } } }, async () => ({ windows: [{ label: "5h", remaining: `${++loads}%`, reset: "—" }] }), defaults);
+  const settle = () => new Promise((resolve) => setImmediate(resolve));
+  try {
+    await status.refresh();
+    const initial = loads;
+    handlers.get("session.status")({ properties: { status: { type: "busy" } } });
+    await settle();
+    assert.equal(loads, initial);
+    handlers.get("session.status")({ properties: { status: { type: "idle" } } });
+    await settle();
+    assert.equal(status.usage().windows[0].remaining, `${initial + 1}%`);
+    handlers.get("session.idle")({});
+    await settle();
+    assert.equal(loads, initial + 2);
+    handlers.get("session.updated")({});
+    await settle();
+    assert.equal(loads, initial + 3);
+    t.mock.timers.tick(60_000);
+    await settle();
+    assert.equal(loads, initial + 4);
+    status.dispose();
+    assert.equal(handlers.size, 0);
+    t.mock.timers.tick(60_000);
+    await settle();
+    assert.equal(loads, initial + 4);
+  } finally { status.dispose(); }
+});
+
+test("a timed-out usage request releases the refresh lock and the next refresh recovers", async (t) => {
+  const controller = new AbortController();
+  t.mock.method(AbortSignal, "timeout", (milliseconds) => {
+    assert.equal(milliseconds, 15_000);
+    return controller.signal;
+  });
+  t.mock.method(globalThis, "fetch", (_url, init) => new Promise((_resolve, reject) => {
+    init.signal.addEventListener("abort", () => reject(init.signal.reason), { once: true });
+  }));
+  const status = registerStatus({}, async () => {
+    const data = await loadUsage("en");
+    return usageStatus(data, "en");
+  }, { showPanel: true, showResets: false });
+  try {
+    const refresh = status.refresh();
+    await new Promise((resolve) => setImmediate(resolve));
+    controller.abort(new Error("Request timed out"));
+    await refresh;
+    assert.equal(status.error(), "Request timed out");
+    assert.equal(status.usage(), undefined);
+    t.mock.restoreAll();
+    t.mock.method(globalThis, "fetch", async () => Response.json({
+      rate_limit: { primary_window: { used_percent: 40, limit_window_seconds: 18000 } },
+    }));
+    await status.refresh();
+    assert.equal(status.error(), undefined);
+    assert.equal(status.usage().windows[0].remaining, "60%");
+  } finally { status.dispose(); }
 });
 
 test("V1 registers the same persistent settings dialog and keeps its panel shortcut", async () => {
   const ui = setupUi();
+  const saved = new Map();
+  ui.api.kv = { get: (key, fallback) => saved.get(key) ?? fallback, set: (key, value) => saved.set(key, value) };
   let dialog;
   ui.api.ui.dialog.replace = (render) => { dialog = render; };
   await plugin.tui(ui.api, { showPanel: false });
@@ -279,6 +393,14 @@ test("V1 registers the same persistent settings dialog and keeps its panel short
   await menu.activate();
   assert.equal(menu.rows()[1].description, "Off");
   assert.equal(menu.rows()[2].description, "On");
+  assert.equal(menu.rows()[4].description, "On");
+  await menu.activate(1, 4);
+  assert.equal(menu.rows()[4].description, "Off");
+  assert.equal(saved.get("codex-limits.showEmail"), false);
+  assert.equal(menu.selected(), 4);
+  assert.equal(dialog, initialDialog);
+  await plugin.tui(ui.api, { showPanel: false });
+  assert.equal(ui.command("codex-settings").run().rows()[4].description, "Off");
 });
 
 test("shared settings serialize writes and leave focus/value intact after a failed save", async () => {
@@ -361,7 +483,7 @@ test("V2 migrates legacy settings, persists independent choices and cleans up bo
   assert.equal(restarted.getSettings().timeFormat, "countdown");
   restarted.dispose();
   assert.equal(removed, 4);
-  assert.equal(unsubscribed, 2);
+  assert.equal(unsubscribed, 6);
 });
 
 test("hides the status panel and skips refreshes for non-OpenAI models", async () => {

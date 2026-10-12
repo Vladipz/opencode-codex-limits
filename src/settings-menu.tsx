@@ -6,7 +6,9 @@ import type { StatusControls } from "./status-controller.ts";
 import type { StatusColors } from "./status-view.tsx";
 
 // The dialog is mounted once. Changing a value never replaces it or resets focus.
-export function createSettingsMenu(status: StatusControls, locale: "en" | "uk", close: () => void, showError: (error: unknown) => void) {
+export type EmailSettings = { enabled: () => boolean; toggle: () => Promise<void> };
+
+export function createSettingsMenu(status: StatusControls, locale: "en" | "uk", close: () => void, showError: (error: unknown) => void, email?: EmailSettings) {
   const text = displayText[locale];
   const [selected, setSelected] = createSignal(0);
   const [saving, setSaving] = createSignal(false);
@@ -15,6 +17,7 @@ export function createSettingsMenu(status: StatusControls, locale: "en" | "uk", 
     { title: text.count, description: status.getSettings().showResets ? text.enabled : text.disabled },
     { title: text.expiry, description: status.getSettings().showResetExpiry !== false ? text.enabled : text.disabled },
     { title: text.timeFormat, description: text[timeFormat(status.getSettings())] },
+    ...(email ? [{ title: text.accountEmail, description: email.enabled() ? text.enabled : text.disabled }] : []),
     { title: text.done, description: "" },
   ];
   let closed = false;
@@ -31,6 +34,7 @@ export function createSettingsMenu(status: StatusControls, locale: "en" | "uk", 
       } else if (index === 1) await status.toggleResets();
       else if (index === 2) await status.toggleExpiry();
       else if (index === 3) await status.toggleTimeFormat();
+      else if (index === 4 && email) await email.toggle();
     } catch (error) { if (!closed) showError(error); }
     finally { setSaving(false); }
   };
@@ -74,8 +78,8 @@ export function SettingsDialog(props: { menu: SettingsMenu; locale: "en" | "uk";
 export function openSettings(status: StatusControls, locale: "en" | "uk", dialog: {
   show: (render: () => any, onClose: () => void) => void;
   clear: () => void;
-}, colors: () => StatusColors, showError: (error: unknown) => void) {
-  const menu = createSettingsMenu(status, locale, () => dialog.clear(), showError);
+}, colors: () => StatusColors, showError: (error: unknown) => void, email?: EmailSettings) {
+  const menu = createSettingsMenu(status, locale, () => dialog.clear(), showError, email);
   dialog.show(() => <SettingsDialog menu={menu} locale={locale} colors={colors} />, menu.onClose);
   return menu;
 }

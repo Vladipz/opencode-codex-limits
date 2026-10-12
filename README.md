@@ -81,7 +81,8 @@ After editing the config, restart OpenCode.
 The usage panel is rendered in the terminal sidebar. It shows remaining
 percentage for the 5-hour and weekly windows with their reset times, plus
 optionally available banked resets. It loads at startup, refreshes every 60 seconds and
-after session updates, and updates after a reset is consumed. A failed refresh
+after session updates and completed replies, and updates after a reset is consumed. Requests
+time out after 15 seconds so a stalled request does not block subsequent refreshes. A failed refresh
 displays an error instead of leaving an old value on screen.
 Both limit rows show reset times in the selected format, using the local timezone for dates.
 Remaining percentages use the active theme's green at 50% or more, yellow
@@ -95,6 +96,10 @@ toggle **Reset count** and **Reset expiration**. Choices apply immediately and p
 across restarts. Reset-count visibility is managed in `/codex-settings` only;
 changing it does not affect expiration visibility. `/codex-settings` replaces
 `/codex-panel` on OpenCode 2.
+
+**Show account email** in the same menu shows or hides the account email in the usage
+panel and compact rows in both versions. It is on by default and preserves previously
+saved V2 email visibility choices. The separate `/codex-account-emails` command is no longer used.
 
 The menu stays open while changing settings and keeps the selected row. Use ↑/↓ to
 select a setting, Enter or ←/→ to change its value, and Done or Esc to close.

@@ -2,12 +2,14 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { createSignal } from "solid-js";
 import { registerStatus } from "./status.tsx";
 import { loadStatus } from "./status-loader.ts";
 import { displayText, validDisplayMode, validTimeFormat } from "./display.ts";
 import { openSettings } from "./settings-menu.tsx";
 
 const API_BASE = "https://chatgpt.com/backend-api/wham";
+const REQUEST_TIMEOUT_MS = 15_000;
 
 export type ResetCredit = {
   id: string;
@@ -221,6 +223,8 @@ async function openAiRequest(
   const token = tokenOverride ?? await getValidToken(locale);
   return fetch(`${API_BASE}${pathname}`, {
     ...init,
+    // Bound both the request and response body so a stalled refresh can retry.
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     headers: {
       Authorization: `Bearer ${token}`,
       Accept: "application/json",
@@ -367,13 +371,14 @@ const plugin = {
   async tui(api: any, options?: { showPanel?: boolean; showResets?: boolean; showResetExpiry?: boolean; displayMode?: string; timeFormat?: string }) {
     const locale = getLocale();
     const text = messages[locale];
+    const [showEmail, setShowEmail] = createSignal(api.kv?.get?.("codex-limits.showEmail", true) !== false);
     const status = registerStatus(api, () => loadStatus(locale, () => loadUsage(locale), () => loadResetCredits(locale)), {
       displayMode: validDisplayMode(options?.displayMode),
       showPanel: options?.showPanel !== false,
       showResets: options?.showResets === true,
       showResetExpiry: options?.showResetExpiry !== false,
       timeFormat: validTimeFormat(options?.timeFormat),
-    }, locale, getAuthEmail);
+    }, locale, () => showEmail() ? getAuthEmail() : undefined);
     const showError = (error: unknown) => {
       const message = error instanceof Error ? error.message : String(error);
       console.error("[codex-limits]", error);
@@ -397,7 +402,15 @@ const plugin = {
           run: () => openSettings(status, locale, {
             show: (render, onClose) => api.ui.dialog.replace(render, onClose),
             clear: () => api.ui.dialog.clear(),
-          }, status.colors, showError),
+          }, status.colors, showError, {
+            enabled: showEmail,
+            toggle: async () => {
+              const next = !showEmail();
+              await api.kv?.set?.("codex-limits.showEmail", next);
+              setShowEmail(next);
+              status.invalidate();
+            },
+          }),
         },
         {
           namespace: "palette",

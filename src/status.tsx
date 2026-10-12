@@ -24,7 +24,17 @@ export function registerStatus(api: any, load: () => Promise<UsageStatus>, defau
     },
     modes: ["panel", "compact-sidebar", "hidden"],
     active: () => true,
-    subscribe: (refresh) => api.event?.on?.("session.updated", refresh),
+    subscribe: (refresh) => {
+      // session.updated reports metadata changes, not completion of every reply.
+      const subscriptions = [
+        api.event?.on?.("session.updated", refresh),
+        api.event?.on?.("session.idle", refresh),
+        api.event?.on?.("session.status", (event: any) => {
+          if (event.properties?.status?.type === "idle") refresh();
+        }),
+      ];
+      return () => { for (const unsubscribe of subscriptions) unsubscribe?.(); };
+    },
   }, load);
   const colors = () => ({ text: api.theme?.current?.text, muted: api.theme?.current?.textMuted,
     error: api.theme?.current?.error, warning: api.theme?.current?.warning, success: api.theme?.current?.success });
