@@ -1,14 +1,12 @@
 import { registerStatusV2 } from "./status-v2.tsx";
-import { displayText } from "./display.ts";
-import { loadStatus } from "./status-loader.ts";
+import { randomUUID } from "node:crypto";
+import { availableResetExpiries, displayText } from "./display.ts";
+import { codexRpc } from "./connection-rpc.ts";
+import { usageStatus } from "./usage-status.ts";
 import { openSettings } from "./settings-menu.tsx";
 import legacy, {
-  consumeResetCredit,
   formatExpiry,
   getLocale,
-  getValidToken,
-  loadResetCredits,
-  loadUsage,
   messages,
   type Locale,
   type ResetCredit,
@@ -19,6 +17,18 @@ type UsageWindow = {
   limit_window_seconds?: number;
   reset_at?: number;
 };
+
+async function within<T>(request: Promise<T>, milliseconds: number, name: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      request,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${name} timed out.`)), milliseconds);
+      }),
+    ]);
+  } finally { if (timer) clearTimeout(timer); }
+}
 
 function usageReport(data: any, locale: Locale): string {
   const text = messages[locale];
@@ -58,10 +68,81 @@ const v2 = {
     const locale = getLocale();
     const text = messages[locale];
     const toast = context.ui.toast.show;
-    const status = registerStatusV2(context, () => loadStatus(locale, () => loadUsage(locale), () => loadResetCredits(locale)), locale);
+    const rpc = context.client.rpc(codexRpc) as any;
+    const [emailSettings, updateEmailSettings] = context.storage.store("codex-limits.usage-email.v2", {
+      initial: { showEmail: true },
+    });
+    // Use the host's reactive store: package-local Solid signals can belong to
+    // a different runtime than the one rendering OpenCode's sidebar.
+    const [emailState, updateEmailState] = context.storage.memory("codex-limits.usage-email.state.v2", {
+      initial: { email: "", showEmail: emailSettings.showEmail !== false },
+    });
+    updateEmailState((draft: { email: string; showEmail: boolean }) => {
+      draft.email = "";
+      draft.showEmail = emailSettings.showEmail !== false;
+    });
+    const accountEmail = () => emailState.email || undefined;
+    const showEmail = () => emailState.showEmail;
+    let pendingEmailSettings = Promise.resolve();
+    const loadIdentity = async () => {
+      try {
+        const email = (await within(rpc.identity({}), 5_000, "OpenAI identity"))?.email;
+        if (typeof email !== "string" || !email.includes("@")) throw new Error("Active OpenAI account email is unavailable.");
+        updateEmailState((draft: { email: string }) => { draft.email = email; });
+        return email;
+      }
+      catch (error) {
+        updateEmailState((draft: { email: string }) => { draft.email = ""; });
+        throw error;
+      }
+    };
+    const loadUsage = () => within(rpc.usage({}), 12_000, "Codex usage");
+    const loadResetCredits = () => within(rpc.credits({}), 3_000, "Reset credits");
+    const loadCurrentStatus = async () => {
+      const [identity, usage] = await Promise.allSettled([loadIdentity(), loadUsage()]);
+      if (identity.status === "rejected") console.error("[codex-limits] Could not load account email", identity.reason);
+      if (usage.status === "rejected") throw usage.reason;
+      const result = usageStatus(usage.value, locale);
+      try {
+        const credits = await loadResetCredits();
+        result.resets = credits.available_count;
+        result.resetExpiries = availableResetExpiries(credits.credits);
+      } catch (error) {
+        console.error("[codex-limits] Could not load reset expiration", error);
+      }
+      return result;
+    };
+    let pendingRedemption: { creditId: string; requestId: string } | undefined;
+    const consumeCredit = async (creditId: string) => {
+      const requestId = pendingRedemption?.creditId === creditId ? pendingRedemption.requestId : randomUUID();
+      pendingRedemption = { creditId, requestId };
+      const { code } = await rpc.consume({ creditId, requestId });
+      if (["reset", "nothing_to_reset", "no_credit", "already_redeemed"].includes(code)) pendingRedemption = undefined;
+      switch (code) {
+        case "reset": return { message: text.resetSucceeded, variant: "success" as const };
+        case "nothing_to_reset": return { message: text.resetNotNeeded, variant: "info" as const };
+        case "no_credit": return { message: text.resetUnavailable, variant: "info" as const };
+        case "already_redeemed": return { message: text.resetAlreadyUsed, variant: "success" as const };
+        default: throw new Error(text.invalidResetResponse);
+      }
+    };
+    const reconnect = () => {
+      const connect = context.keymap.commands().find((command: any) =>
+        command.slash?.name === "connect" || command.id === "provider.connect" || /^connect provider$/i.test(command.title ?? ""));
+      if (!connect) {
+        toast({ message: "Open the Connect provider dialog in OpenCode to reconnect OpenAI.", variant: "warning" });
+        return;
+      }
+      if (connect.id) context.keymap.dispatch(connect.id);
+      else void connect.run();
+    };
+    const status = registerStatusV2(context, loadCurrentStatus, locale, reconnect,
+      () => showEmail() ? accountEmail() : undefined);
     const labels = displayText[locale];
     const showError = (error: unknown) => {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = error instanceof Error ? error.message
+        : error && typeof error === "object" && "message" in error && typeof error.message === "string"
+          ? error.message : JSON.stringify(error) ?? String(error);
       console.error("[codex-limits]", error);
       toast({ message: text.error(message), variant: "error", duration: 10000 });
     };
@@ -75,6 +156,32 @@ const v2 = {
         context.keymap.layer(() => ({
       mode: "global",
       commands: [
+        {
+          id: "codex-account-emails",
+          title: "Toggle active email in the usage panel",
+          group: "Codex",
+          palette: true,
+          slash: { name: "codex-account-emails" },
+          run: async () => {
+            const next = !showEmail();
+            updateEmailState((draft: { showEmail: boolean }) => { draft.showEmail = next; });
+            toast({ message: next ? "Usage email shown" : "Usage email hidden", variant: "info" });
+            const save = pendingEmailSettings.then(() =>
+              updateEmailSettings((draft: { showEmail: boolean }) => { draft.showEmail = next; }));
+            pendingEmailSettings = save.catch(() => {});
+            try {
+              await Promise.all([save, next && !accountEmail() ? loadIdentity() : Promise.resolve()]);
+            } catch (error) { showError(error); }
+          },
+        },
+        {
+          id: "codex-reconnect",
+          title: "Reconnect OpenAI provider",
+          group: "Codex",
+          palette: true,
+          slash: { name: "codex-reconnect" },
+          run: reconnect,
+        },
         {
           id: "codex-settings",
           title: labels.settings,
@@ -93,7 +200,7 @@ const v2 = {
           run: async () => {
             try {
               toast({ message: text.loading, variant: "info", duration: 30000 });
-              const data = await loadUsage(locale);
+              const data = await loadUsage();
               void status.refresh();
               toast({ title: text.usageTitle, message: usageReport(data, locale), variant: "success", duration: 12000 });
             } catch (error) { showError(error); }
@@ -109,7 +216,7 @@ const v2 = {
           run: async () => {
             try {
               toast({ message: text.loadingResets, variant: "info", duration: 30000 });
-              const data = await loadResetCredits(locale);
+              const data = await loadResetCredits();
               const credits = availableCredits(data.credits);
               await context.ui.dialog.alert({
                 title: text.resetsCommandTitle,
@@ -131,8 +238,7 @@ const v2 = {
           run: async () => {
             try {
               toast({ message: text.loadingResets, variant: "info" });
-              const token = await getValidToken(locale);
-              const [usage, data] = await Promise.all([loadUsage(locale, token), loadResetCredits(locale, token)]);
+              const [usage, data] = await Promise.all([loadUsage(), loadResetCredits()]);
               const credits = availableCredits(data.credits);
               if (!credits.length) {
                 toast({ message: text.noResets, variant: "info" });
@@ -160,7 +266,7 @@ const v2 = {
               });
               if (!confirmed) return;
               toast({ message: text.applyingReset, variant: "info" });
-              const result = await consumeResetCredit(locale, credit.id, token);
+              const result = await consumeCredit(credit.id);
               toast({ ...result, duration: 10000 });
               void status.refresh();
             } catch (error) { showError(error); }
